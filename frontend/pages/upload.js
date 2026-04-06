@@ -19,7 +19,7 @@ async function upload(app) {
       <div id="pending-section" class="hidden">
         <div class="flex items-center justify-between mb-4">
           <h2 class="text-lg font-semibold text-gray-800">Review Parsed Entries</h2>
-          <button id="confirm-all" class="btn-primary">Confirm All</button>
+          <button id="confirm-all" class="bg-green-600 hover:bg-green-700 text-white font-semibold px-5 py-2 rounded-lg text-sm transition-colors shadow-sm">Confirm All ✓</button>
         </div>
         <div id="pending-list" class="space-y-3"></div>
       </div>
@@ -61,7 +61,7 @@ async function upload(app) {
             <p class="font-medium text-gray-800">${e.date} — ${e.description}</p>
             <span class="badge-pending">${e.source}</span>
           </div>
-          <button onclick="confirmEntry('${e.entryId}')" class="btn-primary text-xs">Confirm</button>
+          <button onclick="confirmEntry('${e.entryId}')" class="bg-blue-600 hover:bg-blue-700 text-white font-semibold px-4 py-2 rounded-lg text-sm transition-colors shadow-sm">Confirm ✓</button>
         </div>
         <table class="w-full text-sm">
           <thead><tr class="text-gray-400 text-xs uppercase">

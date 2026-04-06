@@ -1,109 +1,189 @@
 let _accounts = [];
+let _entryType = 'expense';
 
 async function manualEntry(app) {
-  _accounts = await API.get('/api/accounts').then(flattenTree).catch(() => []);
+  const tree = await API.get('/api/accounts').catch(() => []);
+  _accounts = [];
+  function flatten(nodes) { for (const n of nodes) { _accounts.push(n); if (n.children) flatten(n.children); } }
+  flatten(tree);
+
+  const expenseAccounts  = _accounts.filter(a => a.type === 'EXPENSE');
+  const incomeAccounts   = _accounts.filter(a => a.type === 'INCOME');
+  const assetAccounts    = _accounts.filter(a => a.type === 'ASSET');
+  const paymentAccounts  = _accounts.filter(a => ['ASSET', 'LIABILITY'].includes(a.type));
+
+  function opts(list) {
+    return list.map(a => `<option value="${a.accountId}">${a.name}</option>`).join('');
+  }
 
   app.innerHTML = `
     <div class="max-w-2xl mx-auto">
       <h1 class="text-2xl font-bold text-gray-900 mb-6">Manual Entry</h1>
       <div class="card">
+
+        <!-- Transaction type tabs -->
+        <div class="flex rounded-xl overflow-hidden border border-gray-200 mb-6 text-sm font-medium">
+          <button id="type-expense"  onclick="setEntryType('expense')"  class="flex-1 py-2.5 transition-colors">💸 Expense</button>
+          <button id="type-income"   onclick="setEntryType('income')"   class="flex-1 py-2.5 transition-colors border-l border-r border-gray-200">💰 Income</button>
+          <button id="type-transfer" onclick="setEntryType('transfer')" class="flex-1 py-2.5 transition-colors">🔄 Transfer</button>
+        </div>
+
+        <!-- Date & Description -->
         <div class="grid grid-cols-2 gap-4 mb-4">
           <div>
-            <label class="text-sm text-gray-600">Date</label>
+            <label class="text-sm text-gray-600 font-medium">Date</label>
             <input id="me-date" type="date" class="mt-1 w-full border rounded-lg px-3 py-2 text-sm"
               value="${new Date().toISOString().slice(0,10)}" />
           </div>
           <div>
-            <label class="text-sm text-gray-600">Description</label>
-            <input id="me-desc" type="text" class="mt-1 w-full border rounded-lg px-3 py-2 text-sm" placeholder="e.g. Coffee at Starbucks" />
+            <label class="text-sm text-gray-600 font-medium">Description</label>
+            <input id="me-desc" type="text" class="mt-1 w-full border rounded-lg px-3 py-2 text-sm"
+              placeholder="e.g. Coffee at Starbucks" />
           </div>
         </div>
 
-        <div class="mb-2 flex items-center justify-between">
-          <span class="text-sm font-medium text-gray-700">Journal Lines</span>
-          <span id="balance-indicator" class="text-xs text-gray-400">Balance: ¥0.00</span>
+        <!-- Amount -->
+        <div class="mb-4">
+          <label class="text-sm text-gray-600 font-medium">Amount</label>
+          <div class="mt-1 relative">
+            <span class="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 text-sm">¥</span>
+            <input id="me-amount" type="number" step="0.01" min="0"
+              class="w-full border rounded-lg pl-7 pr-3 py-2 text-sm" placeholder="0.00" />
+          </div>
         </div>
-        <div id="lines-container" class="space-y-2 mb-4"></div>
-        <button onclick="addLine()" class="btn-ghost text-sm w-full border border-dashed border-gray-300">+ Add Line</button>
 
-        <div class="mt-6 flex justify-end">
-          <button onclick="submitEntry()" class="btn-primary">Save Entry</button>
+        <!-- Expense fields -->
+        <div id="expense-fields">
+          <div class="grid grid-cols-2 gap-4 mb-4">
+            <div>
+              <label class="text-sm text-gray-600 font-medium">Category</label>
+              <select id="me-expense-cat" class="mt-1 w-full border rounded-lg px-3 py-2 text-sm">
+                ${opts(expenseAccounts)}
+              </select>
+            </div>
+            <div>
+              <label class="text-sm text-gray-600 font-medium">Paid with</label>
+              <select id="me-expense-pay" class="mt-1 w-full border rounded-lg px-3 py-2 text-sm">
+                ${opts(paymentAccounts)}
+              </select>
+            </div>
+          </div>
         </div>
+
+        <!-- Income fields -->
+        <div id="income-fields" class="hidden">
+          <div class="grid grid-cols-2 gap-4 mb-4">
+            <div>
+              <label class="text-sm text-gray-600 font-medium">Income Source</label>
+              <select id="me-income-src" class="mt-1 w-full border rounded-lg px-3 py-2 text-sm">
+                ${opts(incomeAccounts)}
+              </select>
+            </div>
+            <div>
+              <label class="text-sm text-gray-600 font-medium">Received in</label>
+              <select id="me-income-dest" class="mt-1 w-full border rounded-lg px-3 py-2 text-sm">
+                ${opts(assetAccounts)}
+              </select>
+            </div>
+          </div>
+        </div>
+
+        <!-- Transfer fields -->
+        <div id="transfer-fields" class="hidden">
+          <div class="grid grid-cols-2 gap-4 mb-4">
+            <div>
+              <label class="text-sm text-gray-600 font-medium">From Account</label>
+              <select id="me-xfer-from" class="mt-1 w-full border rounded-lg px-3 py-2 text-sm">
+                ${opts(paymentAccounts)}
+              </select>
+            </div>
+            <div>
+              <label class="text-sm text-gray-600 font-medium">To Account</label>
+              <select id="me-xfer-to" class="mt-1 w-full border rounded-lg px-3 py-2 text-sm">
+                ${opts(paymentAccounts)}
+              </select>
+            </div>
+          </div>
+        </div>
+
+        <!-- Note -->
+        <div class="mb-6">
+          <label class="text-sm text-gray-600 font-medium">Note <span class="text-gray-400 font-normal">(optional)</span></label>
+          <input id="me-note" type="text" class="mt-1 w-full border rounded-lg px-3 py-2 text-sm"
+            placeholder="Add a note..." />
+        </div>
+
+        <button onclick="submitEntry()" id="submit-btn"
+          class="w-full py-2.5 rounded-lg text-sm font-semibold text-white transition-colors shadow-sm bg-blue-600 hover:bg-blue-700">
+          Save Entry
+        </button>
         <p id="me-error" class="mt-2 text-sm text-red-500 hidden"></p>
       </div>
     </div>`;
 
-  addLine('DEBIT');
-  addLine('CREDIT');
+  setEntryType('expense');
 }
 
-function flattenTree(nodes, result = []) {
-  for (const n of nodes) { result.push(n); if (n.children) flattenTree(n.children, result); }
-  return result;
-}
-
-function accountOptions() {
-  return _accounts.map(a => `<option value="${a.accountId}">${a.accountId} ${a.name}</option>`).join('');
-}
-
-let _lineCount = 0;
-window.addLine = function(direction = 'DEBIT') {
-  const id = ++_lineCount;
-  const el = document.createElement('div');
-  el.id = `line-${id}`;
-  el.className = 'flex gap-2 items-center';
-  el.innerHTML = `
-    <select class="line-dir border rounded px-2 py-1.5 text-sm">
-      <option ${direction === 'DEBIT' ? 'selected' : ''}>DEBIT</option>
-      <option ${direction === 'CREDIT' ? 'selected' : ''}>CREDIT</option>
-    </select>
-    <select class="line-acct border rounded px-2 py-1.5 text-sm flex-1">${accountOptions()}</select>
-    <input class="line-amt border rounded px-2 py-1.5 text-sm w-28" type="number" step="0.01" placeholder="0.00" oninput="updateBalance()" />
-    <input class="line-note border rounded px-2 py-1.5 text-sm flex-1" type="text" placeholder="Note" />
-    <button onclick="document.getElementById('line-${id}').remove(); updateBalance()" class="text-gray-400 hover:text-red-500">✕</button>`;
-  document.getElementById('lines-container').appendChild(el);
-};
-
-window.updateBalance = function() {
-  let debit = 0, credit = 0;
-  document.querySelectorAll('#lines-container > div').forEach(row => {
-    const dir = row.querySelector('.line-dir').value;
-    const amt = parseFloat(row.querySelector('.line-amt').value) || 0;
-    if (dir === 'DEBIT') debit += amt; else credit += amt;
+window.setEntryType = function(type) {
+  _entryType = type;
+  const styles = {
+    expense:  { active: 'bg-red-50 text-red-700',   btn: 'bg-red-600 hover:bg-red-700' },
+    income:   { active: 'bg-green-50 text-green-700', btn: 'bg-green-600 hover:bg-green-700' },
+    transfer: { active: 'bg-blue-50 text-blue-700',  btn: 'bg-blue-600 hover:bg-blue-700' },
+  };
+  ['expense', 'income', 'transfer'].forEach(t => {
+    const btn = document.getElementById(`type-${t}`);
+    const fields = document.getElementById(`${t}-fields`);
+    if (t === type) {
+      btn.className = `flex-1 py-2.5 transition-colors ${styles[t].active} font-semibold`;
+      fields?.classList.remove('hidden');
+    } else {
+      btn.className = 'flex-1 py-2.5 transition-colors text-gray-500 hover:bg-gray-50';
+      fields?.classList.add('hidden');
+    }
   });
-  const diff = debit - credit;
-  const el   = document.getElementById('balance-indicator');
-  if (!el) return;
-  el.textContent = `Balance: ¥${Math.abs(diff).toFixed(2)} ${Math.abs(diff) < 0.01 ? '✓' : diff > 0 ? '(debit heavy)' : '(credit heavy)'}`;
-  el.className = `text-xs ${Math.abs(diff) < 0.01 ? 'text-green-600' : 'text-red-500'}`;
+  const submitBtn = document.getElementById('submit-btn');
+  if (submitBtn) submitBtn.className = `w-full py-2.5 rounded-lg text-sm font-semibold text-white transition-colors shadow-sm ${styles[type].btn}`;
 };
 
 window.submitEntry = async function() {
-  const lines = [];
-  document.querySelectorAll('#lines-container > div').forEach(row => {
-    lines.push({
-      direction: row.querySelector('.line-dir').value,
-      accountId: row.querySelector('.line-acct').value,
-      amount:    parseFloat(row.querySelector('.line-amt').value) || 0,
-      note:      row.querySelector('.line-note').value,
-    });
-  });
+  const amount = parseFloat(document.getElementById('me-amount').value);
+  const date   = document.getElementById('me-date').value;
+  const description = document.getElementById('me-desc').value.trim();
+  const note   = document.getElementById('me-note').value;
+  const err    = document.getElementById('me-error');
 
-  const err = document.getElementById('me-error');
-  const debit  = lines.filter(l => l.direction === 'DEBIT').reduce((s, l) => s + l.amount, 0);
-  const credit = lines.filter(l => l.direction === 'CREDIT').reduce((s, l) => s + l.amount, 0);
-  if (Math.abs(debit - credit) > 0.01) {
-    err.textContent = 'Debit and credit amounts must balance.';
-    err.classList.remove('hidden');
-    return;
+  err.classList.add('hidden');
+  if (!date || !description) { err.textContent = 'Date and description are required.'; err.classList.remove('hidden'); return; }
+  if (!amount || amount <= 0) { err.textContent = 'Please enter a valid amount.'; err.classList.remove('hidden'); return; }
+
+  let lines = [];
+  if (_entryType === 'expense') {
+    const catId = document.getElementById('me-expense-cat').value;
+    const payId = document.getElementById('me-expense-pay').value;
+    lines = [
+      { direction: 'DEBIT',  accountId: catId, amount, note },
+      { direction: 'CREDIT', accountId: payId, amount, note: '' },
+    ];
+  } else if (_entryType === 'income') {
+    const srcId  = document.getElementById('me-income-src').value;
+    const destId = document.getElementById('me-income-dest').value;
+    lines = [
+      { direction: 'DEBIT',  accountId: destId, amount, note },
+      { direction: 'CREDIT', accountId: srcId,  amount, note: '' },
+    ];
+  } else {
+    const fromId = document.getElementById('me-xfer-from').value;
+    const toId   = document.getElementById('me-xfer-to').value;
+    if (fromId === toId) { err.textContent = 'From and To accounts must be different.'; err.classList.remove('hidden'); return; }
+    lines = [
+      { direction: 'DEBIT',  accountId: toId,   amount, note },
+      { direction: 'CREDIT', accountId: fromId,  amount, note: '' },
+    ];
   }
 
   try {
-    await API.post('/api/entries', {
-      date:        document.getElementById('me-date').value,
-      description: document.getElementById('me-desc').value,
-      lines,
-    });
+    await API.post('/api/entries', { date, description, lines });
     location.hash = '#transactions';
   } catch (e) {
     err.textContent = e.message;
