@@ -2,7 +2,7 @@
 
 **Date:** 2026-04-05
 **Status:** Approved
-**Approach:** Standalone AWS CDK project at `/Users/jiaxin/ClaudeProjects/PersonalFinanceApp`
+**Approach:** Standalone AWS CDK project at `/Users/jiaxin/ClaudeProjects/PersonalFinanceApp`, following the same architecture patterns as `AWSStoragePlatform` (CDK TypeScript + Lambda + DynamoDB + API Gateway + CloudFront + EventBridge)
 
 ---
 
@@ -16,7 +16,7 @@ Delivered as a web app (new `/finance` path on the existing CloudFront distribut
 
 ## Architecture
 
-A standalone AWS CDK TypeScript project. Uses the same AWS services as reference (CloudFront, S3, API Gateway, Lambda, DynamoDB, EventBridge, SNS) but built from scratch as an independent stack.
+A standalone AWS CDK TypeScript project in its own folder, following the same architecture patterns as `AWSStoragePlatform`. Uses the same tech stack (CloudFront + S3 for frontend, API Gateway + Lambda for backend, DynamoDB for storage, EventBridge for scheduling, SNS for notifications) but as an independent CDK app — not an extension of the storage platform.
 
 ```
 Frontend (CloudFront + S3, existing)
