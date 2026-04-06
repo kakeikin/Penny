@@ -92,7 +92,7 @@ Output ONLY valid JSON, no explanation:
     })
 
     response = bedrock.invoke_model(
-        modelId='us.anthropic.claude-sonnet-4-6-20250514-v1:0',
+        modelId='anthropic.claude-sonnet-4-6',
         body=body
     )
     result = json.loads(response['body'].read())
