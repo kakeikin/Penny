@@ -133,7 +133,7 @@ export class FinanceStack extends cdk.Stack {
     // ParseLambda uses Bedrock instead of the Anthropic API key
     parseFn.addToRolePolicy(new iam.PolicyStatement({
       actions: ['bedrock:InvokeModel'],
-      resources: ['arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-3-5-sonnet-20241022-v2:0'],
+      resources: ['*'],
     }));
 
     // S3 triggers ParseLambda on uploads/ prefix
