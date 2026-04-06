@@ -136,6 +136,15 @@ export class FinanceStack extends cdk.Stack {
       resources: ['*'],
     }));
 
+    parseFn.addToRolePolicy(new iam.PolicyStatement({
+      actions: [
+        'aws-marketplace:ViewSubscriptions',
+        'aws-marketplace:Subscribe',
+        'aws-marketplace:Unsubscribe',
+      ],
+      resources: ['*'],
+    }));
+
     // S3 triggers ParseLambda on uploads/ prefix
     appBucket.addEventNotification(
       s3.EventType.OBJECT_CREATED,
