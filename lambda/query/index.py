@@ -38,6 +38,15 @@ def get_all_accounts() -> dict:
     return {a['accountId']: a for a in items}
 
 
+def get_pending_entries() -> list:
+    table = dynamodb.Table(ENTRIES_TABLE)
+    return table.scan(
+        FilterExpression='#s = :pending',
+        ExpressionAttributeNames={'#s': 'status'},
+        ExpressionAttributeValues={':pending': 'PENDING'},
+    )['Items']
+
+
 def get_confirmed_entries(start_date=None, end_date=None) -> list:
     table = dynamodb.Table(ENTRIES_TABLE)
     fe = '#s = :confirmed'
@@ -143,10 +152,14 @@ def handler(event, context):
 
     # GET /api/entries
     if path.endswith('/entries'):
-        entries = get_confirmed_entries(
-            start_date=params.get('startDate'),
-            end_date=params.get('endDate'),
-        )
+        status_filter = params.get('status')
+        if status_filter == 'PENDING':
+            entries = get_pending_entries()
+        else:
+            entries = get_confirmed_entries(
+                start_date=params.get('startDate'),
+                end_date=params.get('endDate'),
+            )
         if params.get('accountId'):
             lines_table = dynamodb.Table(LINES_TABLE)
             matching_ids = set()

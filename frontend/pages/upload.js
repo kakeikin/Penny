@@ -49,8 +49,7 @@ async function upload(app) {
   }
 
   async function loadPending() {
-    const entries = await API.get('/api/entries').catch(() => []);
-    const pending = entries.filter(e => e.status === 'PENDING');
+    const pending = await API.get('/api/entries?status=PENDING').catch(() => []);
     if (!pending.length) return;
 
     document.getElementById('pending-section').classList.remove('hidden');
