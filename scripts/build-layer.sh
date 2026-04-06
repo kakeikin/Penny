@@ -1,7 +1,8 @@
 #!/bin/bash
 set -e
-echo "Building Python Lambda layer..."
 rm -rf lambda/layer/python
 mkdir -p lambda/layer/python
-pip3 install anthropic boto3 -t lambda/layer/python --quiet
-echo "Layer built at lambda/layer/python/"
+# boto3 is included in Lambda Python runtime — no extra packages needed
+# Placeholder file required so CDK can produce a non-empty zip
+echo "# boto3 available in Lambda Python runtime" > lambda/layer/python/README.txt
+echo "Layer directory ready (boto3 available in Lambda runtime)"

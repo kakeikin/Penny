@@ -1,5 +1,6 @@
 import * as cdk from 'aws-cdk-lib';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
+import * as iam from 'aws-cdk-lib/aws-iam';
 import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as s3n from 'aws-cdk-lib/aws-s3-notifications';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
@@ -65,7 +66,6 @@ export class FinanceStack extends cdk.Stack {
       ENTRIES_TABLE: entriesTable.tableName,
       LINES_TABLE: linesTable.tableName,
       APP_BUCKET: appBucket.bucketName,
-      CLAUDE_SECRET_ARN: claudeSecret.secretArn,
     };
 
     // ── Lambda Layer: Python dependencies ─────────────────────
@@ -128,8 +128,13 @@ export class FinanceStack extends cdk.Stack {
       entriesTable.grantReadWriteData(fn);
       linesTable.grantReadWriteData(fn);
       appBucket.grantReadWrite(fn);
-      claudeSecret.grantRead(fn);
     });
+
+    // ParseLambda uses Bedrock instead of the Anthropic API key
+    parseFn.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['bedrock:InvokeModel'],
+      resources: ['arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-3-5-sonnet-20241022-v2:0'],
+    }));
 
     // S3 triggers ParseLambda on uploads/ prefix
     appBucket.addEventNotification(

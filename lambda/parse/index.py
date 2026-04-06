@@ -1,24 +1,19 @@
 import boto3
 import json
 import os
+import base64
 import hashlib
 import uuid
 from datetime import datetime, timezone
 
-import sys
-sys.path.insert(0, '/opt/python')
-
-import anthropic
-
 dynamodb = boto3.resource('dynamodb')
 s3_client = boto3.client('s3')
-secrets_client = boto3.client('secretsmanager')
+bedrock = boto3.client('bedrock-runtime', region_name='us-east-1')
 
 ACCOUNTS_TABLE = os.environ.get('ACCOUNTS_TABLE', 'finance-accounts')
 ENTRIES_TABLE  = os.environ.get('ENTRIES_TABLE', 'finance-journal-entries')
 LINES_TABLE    = os.environ.get('LINES_TABLE', 'finance-journal-lines')
 APP_BUCKET     = os.environ.get('APP_BUCKET', '')
-CLAUDE_SECRET_ARN = os.environ.get('CLAUDE_SECRET_ARN', '')
 
 
 def compute_md5(data: bytes) -> str:
@@ -31,12 +26,6 @@ def validate_balance(lines: list) -> bool:
     return abs(debit - credit) < 0.01
 
 
-def get_claude_client() -> anthropic.Anthropic:
-    secret = secrets_client.get_secret_value(SecretId=CLAUDE_SECRET_ARN)
-    api_key = json.loads(secret['SecretString'])['CLAUDE_API_KEY']
-    return anthropic.Anthropic(api_key=api_key)
-
-
 def get_accounts() -> list:
     table = dynamodb.Table(ACCOUNTS_TABLE)
     result = table.scan()
@@ -44,53 +33,79 @@ def get_accounts() -> list:
 
 
 def parse_with_claude(file_data: bytes, media_type: str, accounts: list) -> list:
-    client = get_claude_client()
     account_list = [{'accountId': a['accountId'], 'name': a['name'], 'type': a['type']} for a in accounts]
-
-    import base64
-    encoded = base64.standard_b64encode(file_data).decode('utf-8')
-
+    account_json = json.dumps(account_list, ensure_ascii=False)
     prompt = f"""You are a professional accountant. Analyze this bank statement or receipt and output double-entry bookkeeping journal entries in JSON format.
 
-Accounts must be selected from this list only:
-{json.dumps(account_list, ensure_ascii=False)}
+Accounts must be selected from the following list:
+{account_json}
 
 For each transaction, produce one journal entry with balanced debit and credit lines.
 If classification is uncertain, add a note.
 
-Return ONLY valid JSON with this exact structure:
+Output ONLY valid JSON, no explanation:
 {{
   "entries": [
     {{
       "date": "YYYY-MM-DD",
-      "description": "merchant or transaction description",
+      "description": "...",
       "lines": [
-        {{"accountId": "...", "direction": "DEBIT", "amount": 0.00, "note": ""}},
-        {{"accountId": "...", "direction": "CREDIT", "amount": 0.00, "note": ""}}
+        {{ "accountId": "...", "direction": "DEBIT", "amount": 0.00, "note": "..." }},
+        {{ "accountId": "...", "direction": "CREDIT", "amount": 0.00, "note": "..." }}
       ]
     }}
   ]
 }}"""
 
-    message = client.messages.create(
-        model='claude-sonnet-4-6',
-        max_tokens=4096,
-        messages=[{
-            'role': 'user',
-            'content': [
-                {
-                    'type': 'document' if media_type == 'application/pdf' else 'image',
-                    'source': {'type': 'base64', 'media_type': media_type, 'data': encoded},
-                },
-                {'type': 'text', 'text': prompt},
-            ],
-        }],
-    )
+    # Build content block based on media type
+    if media_type == 'application/pdf':
+        content_block = {
+            "type": "document",
+            "source": {
+                "type": "base64",
+                "media_type": "application/pdf",
+                "data": base64.b64encode(file_data).decode('utf-8')
+            }
+        }
+    else:
+        content_block = {
+            "type": "image",
+            "source": {
+                "type": "base64",
+                "media_type": media_type,
+                "data": base64.b64encode(file_data).decode('utf-8')
+            }
+        }
 
-    raw = message.content[0].text.strip()
+    body = json.dumps({
+        "anthropic_version": "bedrock-2023-05-31",
+        "max_tokens": 4096,
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    content_block,
+                    {"type": "text", "text": prompt}
+                ]
+            }
+        ]
+    })
+
+    response = bedrock.invoke_model(
+        modelId='anthropic.claude-3-5-sonnet-20241022-v2:0',
+        body=body
+    )
+    result = json.loads(response['body'].read())
+    raw = result['content'][0]['text']
+
+    # Strip markdown code fences if present
+    raw = raw.strip()
     if raw.startswith('```'):
-        raw = raw.split('\n', 1)[1].rsplit('```', 1)[0]
-    return json.loads(raw)['entries']
+        raw = raw.split('\n', 1)[1]
+        raw = raw.rsplit('```', 1)[0]
+
+    parsed = json.loads(raw)
+    return parsed.get('entries', [])
 
 
 def save_pending_entries(entries: list, file_key: str, file_hash: str, source: str):
