@@ -5,3 +5,4 @@ cdk.out/
 *.d.ts
 dist/
 .DS_Store
+lambda/layer/python/
