@@ -139,6 +139,23 @@ async function transactions(app) {
     return { type: 'other', amount: 0, category: '' };
   }
 
+  // Build a set of duplicate entry IDs by detecting same date+amount+description(30chars)
+  function findDuplicateIds(entries) {
+    const seen = {};
+    const dupIds = new Set();
+    entries.forEach(e => {
+      const s = summarize(e);
+      const key = `${e.date}|${s.amount.toFixed(2)}|${e.description.slice(0, 30).toLowerCase().trim()}`;
+      if (seen[key]) {
+        dupIds.add(e.entryId);
+        dupIds.add(seen[key]);
+      } else {
+        seen[key] = e.entryId;
+      }
+    });
+    return dupIds;
+  }
+
   let _entries = [];
   let _editId = null;
   let _editType = 'expense';
@@ -156,6 +173,7 @@ async function transactions(app) {
     document.getElementById('csv-link').href = `${window.API_BASE}/api/export/csv${csvQ ? '?' + csvQ : ''}`;
 
     _entries = await API.get(url).catch(e => { alert(e.message); return []; });
+    const dupIds = findDuplicateIds(_entries);
     const list = document.getElementById('entries-list');
     if (!_entries.length) {
       list.innerHTML = '<p class="text-gray-400 text-center py-10">No transactions found.</p>';
@@ -181,8 +199,10 @@ async function transactions(app) {
           <span class="text-gray-800">¥${parseFloat(l.amount).toFixed(2)}</span>
         </div>`).join('');
 
+      const isDup = dupIds.has(e.entryId);
       return `
-        <div class="card">
+        <div class="card ${isDup ? 'border-l-4 border-yellow-400' : ''}">
+          ${isDup ? `<div class="flex items-center gap-2 mb-2 px-3 py-1.5 bg-yellow-50 rounded-lg text-xs text-yellow-800"><span>⚠️</span><span><strong>Possible duplicate</strong> — review and delete if needed.</span></div>` : ''}
           <div class="flex items-start justify-between cursor-pointer" onclick="toggleDetail('${e.entryId}')">
             <div class="flex-1 min-w-0">
               <div class="flex items-center gap-2 mb-0.5">
