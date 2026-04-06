@@ -353,9 +353,13 @@ async function transactions(app) {
     }
   };
 
-  // Load accounts and entries in parallel
-  API.get('/api/accounts').then(tree => {
-    try { flatten(tree); accountMap = Object.fromEntries(allAccounts.map(a => [a.accountId, a])); } catch(e) {}
-  }).catch(() => {});
+  // Load accounts and entries in parallel, render once both are ready
+  const [accountTree] = await Promise.all([
+    API.get('/api/accounts').catch(() => []),
+  ]);
+  try {
+    flatten(accountTree);
+    accountMap = Object.fromEntries(allAccounts.map(a => [a.accountId, a]));
+  } catch(e) {}
   loadEntries();
 }

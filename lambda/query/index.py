@@ -72,23 +72,17 @@ def get_lines_for_entries(entry_ids: list) -> dict:
         return {}
     lines_table = dynamodb.Table(LINES_TABLE)
     result = defaultdict(list)
-
-    # Use ThreadPoolExecutor for parallel queries
-    from concurrent.futures import ThreadPoolExecutor, as_completed
-
-    def fetch_lines(eid):
-        resp = lines_table.query(
-            KeyConditionExpression='entryId = :e',
-            ExpressionAttributeValues={':e': eid},
-        )
-        return eid, resp['Items']
-
-    with ThreadPoolExecutor(max_workers=min(10, len(entry_ids))) as executor:
-        futures = {executor.submit(fetch_lines, eid): eid for eid in entry_ids}
-        for future in as_completed(futures):
-            eid, items = future.result()
-            result[eid] = items
-
+    # Single scan is faster than N individual queries for small-medium datasets
+    response = lines_table.scan()
+    for item in response.get('Items', []):
+        if item['entryId'] in set(entry_ids):
+            result[item['entryId']].append(item)
+    # Handle pagination
+    while 'LastEvaluatedKey' in response:
+        response = lines_table.scan(ExclusiveStartKey=response['LastEvaluatedKey'])
+        for item in response.get('Items', []):
+            if item['entryId'] in set(entry_ids):
+                result[item['entryId']].append(item)
     return result
 
 
