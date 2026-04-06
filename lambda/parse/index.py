@@ -20,6 +20,16 @@ def compute_md5(data: bytes) -> str:
     return hashlib.md5(data).hexdigest()
 
 
+def compute_entry_hash(entry: dict) -> str:
+    """Hash based on date + total amount + first 30 chars of description."""
+    date = entry.get('date', '')
+    desc = entry.get('description', '')[:30].strip().lower()
+    # Sum all debit amounts as the canonical amount
+    total = sum(l['amount'] for l in entry.get('lines', []) if l['direction'] == 'DEBIT')
+    raw = f"{date}|{total:.2f}|{desc}"
+    return hashlib.md5(raw.encode()).hexdigest()
+
+
 def validate_balance(lines: list) -> bool:
     debit  = sum(l['amount'] for l in lines if l['direction'] == 'DEBIT')
     credit = sum(l['amount'] for l in lines if l['direction'] == 'CREDIT')
@@ -119,6 +129,8 @@ def save_pending_entries(entries: list, file_key: str, file_hash: str, source: s
         entry_id   = str(uuid.uuid4())
         date       = entry['date']
         year_month = date[:7]
+        entry_hash = compute_entry_hash(entry)
+        status     = 'DUPLICATE_SUSPECT' if is_duplicate_entry(entry_hash) else 'PENDING'
 
         entries_table.put_item(Item={
             'entryId':     entry_id,
@@ -126,9 +138,10 @@ def save_pending_entries(entries: list, file_key: str, file_hash: str, source: s
             'yearMonth':   year_month,
             'description': entry.get('description', ''),
             'source':      source,
-            'status':      'PENDING',
+            'status':      status,
             'fileKey':     file_key,
             'fileHash':    file_hash,
+            'entryHash':   entry_hash,
             'createdAt':   datetime.now(timezone.utc).isoformat(),
         })
 
@@ -148,6 +161,17 @@ def is_duplicate(file_hash: str) -> bool:
     result = table.scan(
         FilterExpression='fileHash = :h',
         ExpressionAttributeValues={':h': file_hash},
+        Limit=1,
+    )
+    return len(result.get('Items', [])) > 0
+
+
+def is_duplicate_entry(entry_hash: str) -> bool:
+    """Check if a transaction with the same hash already exists."""
+    table = dynamodb.Table(ENTRIES_TABLE)
+    result = table.scan(
+        FilterExpression='entryHash = :h',
+        ExpressionAttributeValues={':h': entry_hash},
         Limit=1,
     )
     return len(result.get('Items', [])) > 0

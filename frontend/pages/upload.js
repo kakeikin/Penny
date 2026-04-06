@@ -166,7 +166,12 @@ async function upload(app) {
     document.getElementById('pending-section').classList.remove('hidden');
     const list = document.getElementById('pending-list');
     list.innerHTML = pending.map(e => `
-      <div class="card" id="entry-${e.entryId}">
+      <div class="card ${e.status === 'DUPLICATE_SUSPECT' ? 'border-l-4 border-yellow-400' : ''}" id="entry-${e.entryId}">
+        ${e.status === 'DUPLICATE_SUSPECT' ? `
+        <div class="flex items-center gap-2 mb-3 px-3 py-2 bg-yellow-50 rounded-lg text-sm text-yellow-800">
+          <span>⚠️</span>
+          <span><strong>Possible duplicate</strong> — a similar transaction already exists. Review before confirming.</span>
+        </div>` : ''}
         <div class="flex justify-between items-start mb-3">
           <div>
             <p class="font-medium text-gray-800">${e.date} — ${e.description}</p>

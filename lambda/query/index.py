@@ -41,9 +41,9 @@ def get_all_accounts() -> dict:
 def get_pending_entries() -> list:
     table = dynamodb.Table(ENTRIES_TABLE)
     return table.scan(
-        FilterExpression='#s = :pending',
+        FilterExpression='#s = :pending OR #s = :dup',
         ExpressionAttributeNames={'#s': 'status'},
-        ExpressionAttributeValues={':pending': 'PENDING'},
+        ExpressionAttributeValues={':pending': 'PENDING', ':dup': 'DUPLICATE_SUSPECT'},
     )['Items']
 
 
