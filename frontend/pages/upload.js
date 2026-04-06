@@ -4,10 +4,14 @@ async function upload(app) {
       <h1 class="text-2xl font-bold text-gray-900 mb-6">Upload Statement or Receipt</h1>
 
       <div id="drop-zone" class="card border-2 border-dashed border-gray-300 text-center cursor-pointer hover:border-blue-400 transition mb-6">
-        <div class="py-10">
-          <p class="text-gray-500 mb-2">Drag & drop a PDF or image here</p>
-          <p class="text-gray-400 text-sm mb-4">or</p>
-          <label class="btn-primary cursor-pointer">
+        <div class="py-10 flex flex-col items-center">
+          <svg class="w-12 h-12 text-gray-300 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
+              d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
+          </svg>
+          <p class="text-gray-600 font-medium mb-1">Drag & drop a PDF or image here</p>
+          <p class="text-gray-400 text-sm mb-5">Supports PDF, JPG, PNG</p>
+          <label class="bg-blue-600 hover:bg-blue-700 text-white font-medium px-6 py-2.5 rounded-lg cursor-pointer transition-colors text-sm shadow-sm">
             Choose File
             <input type="file" id="file-input" accept=".pdf,.jpg,.jpeg,.png" class="hidden" />
           </label>

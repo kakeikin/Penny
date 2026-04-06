@@ -7,10 +7,13 @@ async function manualEntry(app) {
   function flatten(nodes) { for (const n of nodes) { _accounts.push(n); if (n.children) flatten(n.children); } }
   flatten(tree);
 
-  const expenseAccounts  = _accounts.filter(a => a.type === 'EXPENSE');
-  const incomeAccounts   = _accounts.filter(a => a.type === 'INCOME');
-  const assetAccounts    = _accounts.filter(a => a.type === 'ASSET');
-  const paymentAccounts  = _accounts.filter(a => ['ASSET', 'LIABILITY'].includes(a.type));
+  const parentIds = new Set(_accounts.map(a => a.parentId).filter(Boolean));
+  function isLeaf(a) { return !parentIds.has(a.accountId); }
+
+  const expenseAccounts  = _accounts.filter(a => a.type === 'EXPENSE' && isLeaf(a));
+  const incomeAccounts   = _accounts.filter(a => a.type === 'INCOME' && isLeaf(a));
+  const assetAccounts    = _accounts.filter(a => a.type === 'ASSET' && isLeaf(a));
+  const paymentAccounts  = _accounts.filter(a => ['ASSET', 'LIABILITY'].includes(a.type) && isLeaf(a));
 
   function opts(list) {
     return list.map(a => `<option value="${a.accountId}">${a.name}</option>`).join('');

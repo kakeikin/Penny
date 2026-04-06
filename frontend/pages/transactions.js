@@ -6,6 +6,7 @@ async function transactions(app) {
         <a href="#new" class="btn-primary">+ New Entry</a>
       </div>
       <div class="card mb-4 flex gap-4 flex-wrap items-center">
+        <span class="text-gray-500 text-sm font-medium">From</span>
         <input id="filter-start" type="date" class="border rounded-lg px-3 py-1.5 text-sm" />
         <span class="text-gray-400 text-sm">to</span>
         <input id="filter-end" type="date" class="border rounded-lg px-3 py-1.5 text-sm" />
