@@ -1,0 +1,24 @@
+{
+  "name": "personal-finance-app",
+  "version": "0.1.0",
+  "scripts": {
+    "build": "tsc",
+    "test": "jest",
+    "cdk": "cdk",
+    "seed": "ts-node --prefer-ts-exts scripts/seed-accounts.ts"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "^2.242.0",
+    "constructs": "^10.5.0"
+  },
+  "devDependencies": {
+    "@types/jest": "^30",
+    "@types/node": "^24.0.0",
+    "aws-cdk": "^2.242.0",
+    "aws-sdk-client-mock": "^4.1.0",
+    "jest": "^30",
+    "ts-jest": "^29",
+    "ts-node": "^10.9.2",
+    "typescript": "~5.9.3"
+  }
+}
