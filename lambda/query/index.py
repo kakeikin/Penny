@@ -68,14 +68,27 @@ def get_confirmed_entries(start_date=None, end_date=None) -> list:
 
 
 def get_lines_for_entries(entry_ids: list) -> dict:
+    if not entry_ids:
+        return {}
     lines_table = dynamodb.Table(LINES_TABLE)
     result = defaultdict(list)
-    for eid in entry_ids:
+
+    # Use ThreadPoolExecutor for parallel queries
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    def fetch_lines(eid):
         resp = lines_table.query(
             KeyConditionExpression='entryId = :e',
             ExpressionAttributeValues={':e': eid},
         )
-        result[eid] = resp['Items']
+        return eid, resp['Items']
+
+    with ThreadPoolExecutor(max_workers=min(10, len(entry_ids))) as executor:
+        futures = {executor.submit(fetch_lines, eid): eid for eid in entry_ids}
+        for future in as_completed(futures):
+            eid, items = future.result()
+            result[eid] = items
+
     return result
 
 

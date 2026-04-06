@@ -108,12 +108,7 @@ async function transactions(app) {
   // Fetch accounts for name lookup + dropdowns
   let accountMap = {};
   let allAccounts = [];
-  try {
-    const tree = await API.get('/api/accounts');
-    function flatten(nodes) { for (const n of nodes) { allAccounts.push(n); if (n.children) flatten(n.children); } }
-    flatten(tree);
-    accountMap = Object.fromEntries(allAccounts.map(a => [a.accountId, a]));
-  } catch (e) {}
+  function flatten(nodes) { for (const n of nodes) { allAccounts.push(n); if (n.children) flatten(n.children); } }
 
   // Populate modal dropdowns
   const parentIds = new Set(allAccounts.map(a => a.parentId).filter(Boolean));
@@ -358,5 +353,9 @@ async function transactions(app) {
     }
   };
 
+  // Load accounts and entries in parallel
+  API.get('/api/accounts').then(tree => {
+    try { flatten(tree); accountMap = Object.fromEntries(allAccounts.map(a => [a.accountId, a])); } catch(e) {}
+  }).catch(() => {});
   loadEntries();
 }
