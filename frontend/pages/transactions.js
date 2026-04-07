@@ -319,7 +319,7 @@ async function transactions(app) {
     const styles = {
       expense:  { active: 'bg-red-50 text-red-700',    btn: 'bg-red-600 hover:bg-red-700' },
       income:   { active: 'bg-green-50 text-green-700', btn: 'bg-green-600 hover:bg-green-700' },
-      transfer: { active: 'bg-[#f0f4e8] text-[#6a8a3e]',   btn: 'bg-[#8aaa5e] hover:bg-[#7a9a4e]' },
+      transfer: { active: 'bg-blue-50 text-blue-700',   btn: 'bg-blue-600 hover:bg-blue-700' },
     };
     ['expense', 'income', 'transfer'].forEach(t => {
       const btn = document.getElementById(`edit-type-${t}`);
