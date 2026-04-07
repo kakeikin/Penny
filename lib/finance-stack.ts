@@ -214,7 +214,7 @@ export class FinanceStack extends cdk.Stack {
     const advisorFn = new lambda.Function(this, 'AdvisorLambda', {
       runtime: lambda.Runtime.PYTHON_3_12,
       handler: 'index.handler',
-      code: lambda.Code.fromAsset('lambda/advisor'),
+      code: lambda.Code.fromAsset(path.join(__dirname, '../lambda/advisor')),
       layers: [pyLayer],
       environment: lambdaEnv,
       timeout: cdk.Duration.seconds(60),

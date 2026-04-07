@@ -31,7 +31,7 @@ def get_financial_context() -> str:
     )['Items']
 
     # Keep only last 3 months
-    m3 = (now.month - 3 - 1) % 12 + 1
+    m3 = (now.month - 4) % 12 + 1
     y3 = now.year if now.month > 3 else now.year - 1
     cutoff = f"{y3}-{m3:02d}-01"
     recent = [e for e in entries if e.get('date', '') >= cutoff]
