@@ -185,6 +185,10 @@ export class FinanceStack extends cdk.Stack {
     accountsRes.addMethod('GET', new apigw.LambdaIntegration(queryFn));
     accountsRes.addMethod('POST', new apigw.LambdaIntegration(manualEntryFn));
 
+    // /api/tags
+    const tagsRes = apiRoot.addResource('tags');
+    tagsRes.addMethod('GET', new apigw.LambdaIntegration(queryFn));
+
     // /api/summary, /api/reports/*, /api/export/csv
     apiRoot.addResource('summary').addMethod('GET', new apigw.LambdaIntegration(queryFn));
     const reportsRes = apiRoot.addResource('reports');

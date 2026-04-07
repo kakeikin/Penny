@@ -180,6 +180,10 @@ def handler(event, context):
                         matching_ids.add(entry['entryId'])
             entries = [e for e in entries if e['entryId'] in matching_ids]
 
+        tag_filter = params.get('tag')
+        if tag_filter:
+            entries = [e for e in entries if tag_filter in e.get('tags', [])]
+
         lines_by_entry = get_lines_for_entries([e['entryId'] for e in entries])
         for entry in entries:
             entry['lines'] = lines_by_entry.get(entry['entryId'], [])
@@ -245,5 +249,17 @@ def handler(event, context):
         monthly.reverse()
         return {'statusCode': 200, 'headers': CORS,
                 'body': json.dumps(monthly, cls=DecimalEncoder)}
+
+    # GET /api/tags
+    if path.endswith('/tags'):
+        all_entries = dynamodb.Table(ENTRIES_TABLE).scan(
+            ProjectionExpression='tags',
+        )['Items']
+        tag_set = set()
+        for e in all_entries:
+            for t in e.get('tags', []):
+                tag_set.add(t)
+        return {'statusCode': 200, 'headers': CORS,
+                'body': json.dumps(sorted(tag_set), cls=DecimalEncoder)}
 
     return {'statusCode': 404, 'headers': CORS, 'body': json.dumps({'error': 'Not found'})}

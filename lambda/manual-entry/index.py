@@ -40,6 +40,10 @@ def handler(event, context):
         date       = body['date']
         year_month = date[:7]
 
+        tags = body.get('tags', [])
+        if isinstance(tags, str):
+            tags = [t.strip() for t in tags.split(',') if t.strip()]
+
         entries_table.put_item(Item={
             'entryId':     entry_id,
             'date':        date,
@@ -47,6 +51,7 @@ def handler(event, context):
             'description': body.get('description', ''),
             'source':      'MANUAL',
             'status':      'CONFIRMED',
+            'tags':        tags,
             'fileKey':     None,
             'fileHash':    None,
             'createdAt':   datetime.now(timezone.utc).isoformat(),
@@ -79,6 +84,12 @@ def handler(event, context):
             expr_names['#dt'] = 'date'
             expr_vals[':dt'] = body['date']
             expr_vals[':ym'] = body['date'][:7]
+        if 'tags' in body:
+            tags = body['tags']
+            if isinstance(tags, str):
+                tags = [t.strip() for t in tags.split(',') if t.strip()]
+            update_expr.append('tags = :tags')
+            expr_vals[':tags'] = tags
 
         if update_expr:
             entries_table.update_item(

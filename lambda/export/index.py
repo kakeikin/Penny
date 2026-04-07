@@ -50,7 +50,7 @@ def handler(event, context):
     # Build CSV
     output = io.StringIO()
     writer = csv.writer(output)
-    writer.writerow(['Date', 'Description', 'Source', 'Account', 'Direction', 'Amount', 'Note'])
+    writer.writerow(['Date', 'Description', 'Source', 'Account', 'Direction', 'Amount', 'Note', 'Tags'])
 
     for entry in entries:
         lines = lines_table.query(
@@ -66,6 +66,7 @@ def handler(event, context):
                 line['direction'],
                 float(line['amount']) if not isinstance(line['amount'], Decimal) else float(line['amount']),
                 line.get('note', ''),
+                ','.join(entry.get('tags', [])),
             ])
 
     return {
