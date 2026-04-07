@@ -110,16 +110,18 @@ async function transactions(app) {
   let allAccounts = [];
   function flatten(nodes) { for (const n of nodes) { allAccounts.push(n); if (n.children) flatten(n.children); } }
 
-  // Populate modal dropdowns
-  const parentIds = new Set(allAccounts.map(a => a.parentId).filter(Boolean));
-  function isLeaf(a) { return !parentIds.has(a.accountId); }
+  // Populate modal dropdowns (computed lazily so allAccounts is populated first)
+  function isLeaf(a) {
+    const parentIds = new Set(allAccounts.map(x => x.parentId).filter(Boolean));
+    return !parentIds.has(a.accountId);
+  }
   function opts(list, selectedId = '') {
     return list.map(a => `<option value="${a.accountId}" ${a.accountId === selectedId ? 'selected' : ''}>${a.name}</option>`).join('');
   }
-  const expenseAccts  = allAccounts.filter(a => a.type === 'EXPENSE' && isLeaf(a));
-  const incomeAccts   = allAccounts.filter(a => a.type === 'INCOME' && isLeaf(a));
-  const assetAccts    = allAccounts.filter(a => a.type === 'ASSET' && isLeaf(a));
-  const paymentAccts  = allAccounts.filter(a => ['ASSET','LIABILITY'].includes(a.type) && isLeaf(a));
+  function expenseAccts()  { return allAccounts.filter(a => a.type === 'EXPENSE' && isLeaf(a)); }
+  function incomeAccts()   { return allAccounts.filter(a => a.type === 'INCOME' && isLeaf(a)); }
+  function assetAccts()    { return allAccounts.filter(a => a.type === 'ASSET' && isLeaf(a)); }
+  function paymentAccts()  { return allAccounts.filter(a => ['ASSET','LIABILITY'].includes(a.type) && isLeaf(a)); }
 
   function acctName(id) { return accountMap[id]?.name || id; }
 
@@ -253,34 +255,34 @@ async function transactions(app) {
     if (expLine) {
       detectedType = 'expense';
       amount = parseFloat(expLine.amount);
-      document.getElementById('edit-expense-cat').innerHTML = opts(expenseAccts, expLine.accountId);
-      document.getElementById('edit-expense-pay').innerHTML = opts(paymentAccts, payLine?.accountId || '');
+      document.getElementById('edit-expense-cat').innerHTML = opts(expenseAccts(), expLine.accountId);
+      document.getElementById('edit-expense-pay').innerHTML = opts(paymentAccts(), payLine?.accountId || '');
     } else if (incLine) {
       detectedType = 'income';
       amount = parseFloat(incLine.amount);
-      document.getElementById('edit-income-src').innerHTML = opts(incomeAccts, incLine.accountId);
-      document.getElementById('edit-income-dest').innerHTML = opts(assetAccts, depLine?.accountId || '');
+      document.getElementById('edit-income-src').innerHTML = opts(incomeAccts(), incLine.accountId);
+      document.getElementById('edit-income-dest').innerHTML = opts(assetAccts(), depLine?.accountId || '');
     } else {
       detectedType = 'transfer';
       const debitLine = lines.find(l => l.direction === 'DEBIT');
       const creditLine = lines.find(l => l.direction === 'CREDIT');
       amount = debitLine ? parseFloat(debitLine.amount) : 0;
-      document.getElementById('edit-xfer-from').innerHTML = opts(paymentAccts, creditLine?.accountId || '');
-      document.getElementById('edit-xfer-to').innerHTML = opts(paymentAccts, debitLine?.accountId || '');
+      document.getElementById('edit-xfer-from').innerHTML = opts(paymentAccts(), creditLine?.accountId || '');
+      document.getElementById('edit-xfer-to').innerHTML = opts(paymentAccts(), debitLine?.accountId || '');
     }
 
     // If dropdowns not yet populated for non-detected types, fill them
     if (detectedType !== 'expense') {
-      document.getElementById('edit-expense-cat').innerHTML = opts(expenseAccts);
-      document.getElementById('edit-expense-pay').innerHTML = opts(paymentAccts);
+      document.getElementById('edit-expense-cat').innerHTML = opts(expenseAccts());
+      document.getElementById('edit-expense-pay').innerHTML = opts(paymentAccts());
     }
     if (detectedType !== 'income') {
-      document.getElementById('edit-income-src').innerHTML = opts(incomeAccts);
-      document.getElementById('edit-income-dest').innerHTML = opts(assetAccts);
+      document.getElementById('edit-income-src').innerHTML = opts(incomeAccts());
+      document.getElementById('edit-income-dest').innerHTML = opts(assetAccts());
     }
     if (detectedType !== 'transfer') {
-      document.getElementById('edit-xfer-from').innerHTML = opts(paymentAccts);
-      document.getElementById('edit-xfer-to').innerHTML = opts(paymentAccts);
+      document.getElementById('edit-xfer-from').innerHTML = opts(paymentAccts());
+      document.getElementById('edit-xfer-to').innerHTML = opts(paymentAccts());
     }
 
     document.getElementById('edit-amount').value = amount.toFixed(2);
