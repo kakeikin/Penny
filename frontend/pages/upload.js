@@ -299,13 +299,13 @@ async function upload(app) {
     setUploadEditType(detectedType);
 
     // Pre-fill foreign currency fields
-    const debitLine = (entry.lines || []).find(l => l.direction === 'DEBIT' && l.originalCurrency);
-    if (debitLine) {
+    const fxLine = (entry.lines || []).find(l => l.direction === 'DEBIT' && l.originalCurrency);
+    if (fxLine) {
       document.getElementById('ue-foreign').checked = true;
       document.getElementById('ue-foreign-fields').classList.remove('hidden');
-      document.getElementById('ue-orig-amount').value = debitLine.originalAmount || '';
-      document.getElementById('ue-orig-currency').value = debitLine.originalCurrency || 'USD';
-      document.getElementById('ue-rate').value = debitLine.exchangeRate || '';
+      document.getElementById('ue-orig-amount').value = fxLine.originalAmount || '';
+      document.getElementById('ue-orig-currency').value = fxLine.originalCurrency || 'USD';
+      document.getElementById('ue-rate').value = fxLine.exchangeRate || '';
     } else {
       document.getElementById('ue-foreign').checked = false;
       document.getElementById('ue-foreign-fields').classList.add('hidden');
