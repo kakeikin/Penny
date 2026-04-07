@@ -112,7 +112,7 @@ async function transactions(app) {
         <p id="edit-error" class="mb-3 text-sm text-red-500 hidden"></p>
         <div class="flex gap-3">
           <button onclick="closeEditModal()" class="flex-1 py-2 rounded-lg border text-sm font-medium text-gray-600 hover:bg-gray-50">Cancel</button>
-          <button id="edit-save-btn" onclick="saveEdit()" class="flex-1 py-2 rounded-lg text-sm font-semibold text-white bg-blue-600 hover:bg-blue-700 transition-colors">Save Changes</button>
+          <button id="edit-save-btn" onclick="saveEdit()" class="flex-1 py-2 rounded-lg text-sm font-semibold text-white bg-[#8aaa5e] hover:bg-[#7a9a4e] transition-colors">Save Changes</button>
         </div>
       </div>
     </div>`;
@@ -319,7 +319,7 @@ async function transactions(app) {
     const styles = {
       expense:  { active: 'bg-red-50 text-red-700',    btn: 'bg-red-600 hover:bg-red-700' },
       income:   { active: 'bg-green-50 text-green-700', btn: 'bg-green-600 hover:bg-green-700' },
-      transfer: { active: 'bg-blue-50 text-blue-700',   btn: 'bg-blue-600 hover:bg-blue-700' },
+      transfer: { active: 'bg-[#f0f4e8] text-[#6a8a3e]',   btn: 'bg-[#8aaa5e] hover:bg-[#7a9a4e]' },
     };
     ['expense', 'income', 'transfer'].forEach(t => {
       const btn = document.getElementById(`edit-type-${t}`);

@@ -11,7 +11,7 @@ async function upload(app) {
           </svg>
           <p class="text-gray-600 font-medium mb-1">Drag & drop a PDF or image here</p>
           <p class="text-gray-400 text-sm mb-5">Supports PDF, JPG, PNG</p>
-          <label class="bg-blue-600 hover:bg-blue-700 text-white font-medium px-6 py-2.5 rounded-lg cursor-pointer transition-colors text-sm shadow-sm">
+          <label class="bg-[#8aaa5e] hover:bg-[#7a9a4e] text-white font-medium px-6 py-2.5 rounded-lg cursor-pointer transition-colors text-sm shadow-sm">
             Choose File
             <input type="file" id="file-input" accept=".pdf,.jpg,.jpeg,.png" class="hidden" />
           </label>
@@ -139,7 +139,7 @@ async function upload(app) {
         <p id="ue-error" class="mb-3 text-sm text-red-500 hidden"></p>
         <div class="flex gap-3">
           <button onclick="closeUploadEditModal()" class="flex-1 py-2 rounded-lg border text-sm font-medium text-gray-600 hover:bg-gray-50">Cancel</button>
-          <button id="ue-save-btn" onclick="saveUploadEdit()" class="flex-1 py-2 rounded-lg text-sm font-semibold text-white bg-blue-600 hover:bg-blue-700 transition-colors">Save Changes</button>
+          <button id="ue-save-btn" onclick="saveUploadEdit()" class="flex-1 py-2 rounded-lg text-sm font-semibold text-white bg-[#8aaa5e] hover:bg-[#7a9a4e] transition-colors">Save Changes</button>
         </div>
       </div>
     </div>`;
@@ -208,7 +208,7 @@ async function upload(app) {
           </div>
           <div class="flex gap-2">
             <button onclick="openUploadEditModal('${e.entryId}')" class="bg-gray-100 hover:bg-gray-200 text-gray-700 font-medium px-3 py-1.5 rounded-lg text-sm transition-colors">Edit</button>
-            <button onclick="confirmEntry('${e.entryId}')" class="bg-blue-600 hover:bg-blue-700 text-white font-semibold px-4 py-1.5 rounded-lg text-sm transition-colors shadow-sm">Confirm ✓</button>
+            <button onclick="confirmEntry('${e.entryId}')" class="bg-[#8aaa5e] hover:bg-[#7a9a4e] text-white font-semibold px-4 py-1.5 rounded-lg text-sm transition-colors shadow-sm">Confirm ✓</button>
           </div>
         </div>
         <table class="w-full text-sm">
@@ -324,7 +324,7 @@ async function upload(app) {
     const styles = {
       expense:  { active: 'bg-red-50 text-red-700',    btn: 'bg-red-600 hover:bg-red-700' },
       income:   { active: 'bg-green-50 text-green-700', btn: 'bg-green-600 hover:bg-green-700' },
-      transfer: { active: 'bg-blue-50 text-blue-700',   btn: 'bg-blue-600 hover:bg-blue-700' },
+      transfer: { active: 'bg-[#f0f4e8] text-[#6a8a3e]',   btn: 'bg-[#8aaa5e] hover:bg-[#7a9a4e]' },
     };
     ['expense', 'income', 'transfer'].forEach(t => {
       document.getElementById(`ue-type-${t}`).className = t === type

@@ -15,7 +15,7 @@ async function reports(app) {
           <label class="text-sm text-gray-600">To</label>
           <input id="r-end" type="date" class="block border rounded px-3 py-1.5 text-sm mt-1" value="${today}" />
         </div>
-        <button onclick="runReports()" class="bg-blue-600 hover:bg-blue-700 text-white font-medium px-5 py-2 rounded-lg text-sm transition-colors shadow-sm">Run Report</button>
+        <button onclick="runReports()" class="bg-[#8aaa5e] hover:bg-[#7a9a4e] text-white font-medium px-5 py-2 rounded-lg text-sm transition-colors shadow-sm">Run Report</button>
       </div>
 
       <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">

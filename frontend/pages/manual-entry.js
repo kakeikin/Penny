@@ -148,7 +148,7 @@ async function manualEntry(app) {
         </div>
 
         <button onclick="submitEntry()" id="submit-btn"
-          class="w-full py-2.5 rounded-lg text-sm font-semibold text-white transition-colors shadow-sm bg-blue-600 hover:bg-blue-700">
+          class="w-full py-2.5 rounded-lg text-sm font-semibold text-white transition-colors shadow-sm bg-[#8aaa5e] hover:bg-[#7a9a4e]">
           Save Entry
         </button>
         <p id="me-error" class="mt-2 text-sm text-red-500 hidden"></p>
@@ -163,7 +163,7 @@ window.setEntryType = function(type) {
   const styles = {
     expense:  { active: 'bg-red-50 text-red-700',   btn: 'bg-red-600 hover:bg-red-700' },
     income:   { active: 'bg-green-50 text-green-700', btn: 'bg-green-600 hover:bg-green-700' },
-    transfer: { active: 'bg-blue-50 text-blue-700',  btn: 'bg-blue-600 hover:bg-blue-700' },
+    transfer: { active: 'bg-[#f0f4e8] text-[#6a8a3e]',  btn: 'bg-[#8aaa5e] hover:bg-[#7a9a4e]' },
   };
   ['expense', 'income', 'transfer'].forEach(t => {
     const btn = document.getElementById(`type-${t}`);

@@ -53,7 +53,7 @@ async function settings(app) {
               <input id="budget-limit" type="number" step="0.01" class="mt-1 w-full border rounded-lg px-3 py-2 text-sm" placeholder="500.00" />
             </div>
             <div class="flex items-end">
-              <button onclick="saveBudget()" class="w-full bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium py-2 rounded-lg transition-colors">Save Budget</button>
+              <button onclick="saveBudget()" class="w-full bg-[#8aaa5e] hover:bg-[#7a9a4e] text-white text-sm font-medium py-2 rounded-lg transition-colors">Save Budget</button>
             </div>
           </div>
         </div>

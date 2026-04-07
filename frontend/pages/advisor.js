@@ -18,7 +18,7 @@ async function advisor(app) {
           placeholder="Ask a question about your finances..."
           onkeydown="if(event.key==='Enter' && !event.shiftKey){ event.preventDefault(); sendQuestion(); }" />
         <button onclick="sendQuestion()" id="advisor-send"
-          class="bg-blue-600 hover:bg-blue-700 text-white font-medium px-5 py-3 rounded-xl text-sm transition-colors shadow-sm">
+          class="bg-[#8aaa5e] hover:bg-[#7a9a4e] text-white font-medium px-5 py-3 rounded-xl text-sm transition-colors shadow-sm">
           Ask
         </button>
       </div>
@@ -48,7 +48,7 @@ async function advisor(app) {
     div.className = `flex ${isUser ? 'justify-end' : 'justify-start'} mb-4`;
     div.innerHTML = `
       <div class="max-w-lg px-4 py-3 rounded-2xl text-sm ${isUser
-        ? 'bg-blue-600 text-white rounded-br-sm'
+        ? 'bg-[#8aaa5e] text-white rounded-br-sm'
         : 'bg-gray-100 text-gray-800 rounded-bl-sm'}">
         ${(isUser ? escHtml(text) : text).replace(/\n/g, '<br>')}
       </div>`;
