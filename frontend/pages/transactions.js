@@ -204,7 +204,7 @@ async function transactions(app) {
         : s.type === 'income' ? 'bg-green-50 text-green-600' : 'bg-blue-50 text-blue-600';
 
       const detailLines = (e.lines || []).map(l => {
-        const origCurr = l.originalCurrency ? ` <span class="text-xs text-gray-400">(${escHtml(l.originalCurrency)} ${parseFloat(l.originalAmount).toFixed(2)})</span>` : '';
+        const origCurr = (l.originalCurrency && l.originalAmount != null) ? ` <span class="text-xs text-gray-400">(${escHtml(l.originalCurrency)} ${parseFloat(l.originalAmount).toFixed(2)})</span>` : '';
         return `
         <div class="flex justify-between text-sm py-1 border-t border-gray-50">
           <span class="text-gray-600">${acctName(l.accountId)}</span>
