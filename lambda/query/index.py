@@ -253,6 +253,9 @@ def handler(event, context):
     # GET /api/tags
     if path.endswith('/tags'):
         all_entries = dynamodb.Table(ENTRIES_TABLE).scan(
+            FilterExpression='#s = :confirmed',
+            ExpressionAttributeNames={'#s': 'status'},
+            ExpressionAttributeValues={':confirmed': 'CONFIRMED'},
             ProjectionExpression='tags',
         )['Items']
         tag_set = set()

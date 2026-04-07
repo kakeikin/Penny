@@ -19,6 +19,13 @@ def lines_balance(lines):
     return abs(debit - credit) < 0.01
 
 
+def parse_tags(value):
+    """Accept a list or comma-separated string of tags, return a clean list."""
+    if isinstance(value, str):
+        return [t.strip() for t in value.split(',') if t.strip()]
+    return [t.strip() for t in (value or []) if t.strip()]
+
+
 def handler(event, context):
     method = event.get('httpMethod', '')
     path   = event.get('path', '')
@@ -40,9 +47,7 @@ def handler(event, context):
         date       = body['date']
         year_month = date[:7]
 
-        tags = body.get('tags', [])
-        if isinstance(tags, str):
-            tags = [t.strip() for t in tags.split(',') if t.strip()]
+        tags = parse_tags(body.get('tags', []))
 
         entries_table.put_item(Item={
             'entryId':     entry_id,
@@ -85,11 +90,8 @@ def handler(event, context):
             expr_vals[':dt'] = body['date']
             expr_vals[':ym'] = body['date'][:7]
         if 'tags' in body:
-            tags = body['tags']
-            if isinstance(tags, str):
-                tags = [t.strip() for t in tags.split(',') if t.strip()]
             update_expr.append('tags = :tags')
-            expr_vals[':tags'] = tags
+            expr_vals[':tags'] = parse_tags(body['tags'])
 
         if update_expr:
             entries_table.update_item(
