@@ -33,6 +33,7 @@
       <a href="#new"           class="nav-link" data-page="new">Manual Entry</a>
       <a href="#reports"       class="nav-link" data-page="reports">Reports</a>
       <a href="#settings"      class="nav-link" data-page="settings">Settings</a>
+      <a href="#advisor"       class="nav-link" data-page="advisor">🤖 Advisor</a>
     </nav>
 
     <main id="app" class="flex-1 overflow-y-auto p-8"></main>
@@ -44,9 +45,10 @@
   <script src="pages/manual-entry.js"></script>
   <script src="pages/reports.js"></script>
   <script src="pages/settings.js"></script>
+  <script src="pages/advisor.js"></script>
 
   <script>
-    const PAGES = { dashboard, upload, transactions, 'new': manualEntry, reports, settings };
+    const PAGES = { dashboard, upload, transactions, 'new': manualEntry, reports, settings, advisor };
 
     function setActive(page) {
       document.querySelectorAll('.nav-link').forEach(a => {
