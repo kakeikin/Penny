@@ -1,3 +1,7 @@
+function escHtml(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
 async function transactions(app) {
   app.innerHTML = `
     <div class="max-w-4xl mx-auto">
@@ -217,7 +221,7 @@ async function transactions(app) {
                 <span class="text-xs text-gray-400">${s.category}</span>
               </div>
               <p class="font-medium text-gray-800 truncate">${e.description}</p>
-              ${(e.tags || []).length ? `<div class="flex flex-wrap gap-1 mt-1">${(e.tags||[]).map(t => `<span class="text-xs bg-purple-50 text-purple-700 px-2 py-0.5 rounded-full">#${t}</span>`).join('')}</div>` : ''}
+              ${(e.tags || []).length ? `<div class="flex flex-wrap gap-1 mt-1">${(e.tags||[]).map(t => `<span class="text-xs bg-purple-50 text-purple-700 px-2 py-0.5 rounded-full">#${escHtml(t)}</span>`).join('')}</div>` : ''}
               <p class="text-xs text-gray-400">${e.date} · ${e.source}</p>
             </div>
             <div class="flex items-center gap-3 ml-4 shrink-0">
