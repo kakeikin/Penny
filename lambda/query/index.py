@@ -9,6 +9,7 @@ dynamodb = boto3.resource('dynamodb')
 ACCOUNTS_TABLE = os.environ.get('ACCOUNTS_TABLE', 'finance-accounts')
 ENTRIES_TABLE  = os.environ.get('ENTRIES_TABLE', 'finance-journal-entries')
 LINES_TABLE    = os.environ.get('LINES_TABLE', 'finance-journal-lines')
+BUDGETS_TABLE  = os.environ.get('BUDGETS_TABLE', 'finance-budgets')
 
 CORS = {'Access-Control-Allow-Origin': '*', 'Content-Type': 'application/json'}
 
@@ -264,5 +265,71 @@ def handler(event, context):
                 tag_set.add(t)
         return {'statusCode': 200, 'headers': CORS,
                 'body': json.dumps(sorted(tag_set), cls=DecimalEncoder)}
+
+    # GET /api/budgets
+    if path.endswith('/budgets'):
+        items = dynamodb.Table(BUDGETS_TABLE).scan()['Items']
+        return {'statusCode': 200, 'headers': CORS,
+                'body': json.dumps(items, cls=DecimalEncoder)}
+
+    # GET /api/alerts
+    if path.endswith('/alerts'):
+        from datetime import datetime
+        budgets = dynamodb.Table(BUDGETS_TABLE).scan()['Items']
+        if not budgets:
+            return {'statusCode': 200, 'headers': CORS, 'body': json.dumps([])}
+
+        alerts_out = []
+        now = datetime.utcnow()
+
+        for budget in budgets:
+            acct_id = budget['accountId']
+            limit   = float(budget['monthlyLimit'])
+
+            # Collect spending for last 6 complete months + current month
+            monthly_totals = []
+            for i in range(7):  # 0 = current month, 1-6 = past months
+                m = (now.month - i - 1) % 12 + 1
+                y = now.year if (now.month - i) > 0 else now.year - 1
+                ym = f'{y}-{m:02d}'
+                entries = dynamodb.Table(ENTRIES_TABLE).scan(
+                    FilterExpression='yearMonth = :ym AND #s = :confirmed',
+                    ExpressionAttributeNames={'#s': 'status'},
+                    ExpressionAttributeValues={':ym': ym, ':confirmed': 'CONFIRMED'},
+                )['Items']
+                total = 0.0
+                for entry in entries:
+                    lines = dynamodb.Table(LINES_TABLE).query(
+                        KeyConditionExpression='entryId = :e',
+                        ExpressionAttributeValues={':e': entry['entryId']},
+                    )['Items']
+                    for line in lines:
+                        if line['accountId'] == acct_id and line['direction'] == 'DEBIT':
+                            total += float(line['amount'])
+                monthly_totals.append({'month': ym, 'total': total})
+
+            current_month_total = monthly_totals[0]['total']
+            past_6 = [m['total'] for m in monthly_totals[1:7] if m['total'] > 0]
+            if not past_6:
+                continue
+            avg = sum(past_6) / len(past_6)
+
+            over_limit = current_month_total > limit
+            over_avg   = avg > 0 and current_month_total > avg * 1.10
+
+            if over_limit or over_avg:
+                alerts_out.append({
+                    'accountId':          acct_id,
+                    'accountName':        budget.get('name', acct_id),
+                    'monthlyLimit':       limit,
+                    'currentMonthTotal':  current_month_total,
+                    'sixMonthAverage':    round(avg, 2),
+                    'overLimit':          over_limit,
+                    'overAverage':        over_avg,
+                    'percentOverAverage': round((current_month_total / avg - 1) * 100, 1) if avg > 0 else 0,
+                })
+
+        return {'statusCode': 200, 'headers': CORS,
+                'body': json.dumps(alerts_out, cls=DecimalEncoder)}
 
     return {'statusCode': 404, 'headers': CORS, 'body': json.dumps({'error': 'Not found'})}

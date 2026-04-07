@@ -49,6 +49,13 @@ export class FinanceStack extends cdk.Stack {
       removalPolicy: cdk.RemovalPolicy.RETAIN,
     });
 
+    const budgetsTable = new dynamodb.Table(this, 'BudgetsTable', {
+      tableName: 'finance-budgets',
+      partitionKey: { name: 'accountId', type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: cdk.RemovalPolicy.RETAIN,
+    });
+
     // ── S3 Bucket ─────────────────────────────────────────────
     const appBucket = new s3.Bucket(this, 'AppBucket', {
       blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
@@ -66,6 +73,7 @@ export class FinanceStack extends cdk.Stack {
       ENTRIES_TABLE: entriesTable.tableName,
       LINES_TABLE: linesTable.tableName,
       APP_BUCKET: appBucket.bucketName,
+      BUDGETS_TABLE: 'finance-budgets',
     };
 
     // ── Lambda Layer: Python dependencies ─────────────────────
@@ -130,6 +138,9 @@ export class FinanceStack extends cdk.Stack {
       appBucket.grantReadWrite(fn);
     });
 
+    [parseFn, confirmFn, queryFn, exportFn].forEach(fn => budgetsTable.grantReadData(fn));
+    budgetsTable.grantReadWriteData(manualEntryFn);
+
     // ParseLambda uses Bedrock instead of the Anthropic API key
     parseFn.addToRolePolicy(new iam.PolicyStatement({
       actions: ['bedrock:InvokeModel'],
@@ -188,6 +199,16 @@ export class FinanceStack extends cdk.Stack {
     // /api/tags
     const tagsRes = apiRoot.addResource('tags');
     tagsRes.addMethod('GET', new apigw.LambdaIntegration(queryFn));
+
+    // /api/budgets
+    const budgetsRes = apiRoot.addResource('budgets');
+    budgetsRes.addMethod('GET', new apigw.LambdaIntegration(queryFn));
+    budgetsRes.addMethod('POST', new apigw.LambdaIntegration(manualEntryFn));
+    const budgetById = budgetsRes.addResource('{accountId}');
+    budgetById.addMethod('DELETE', new apigw.LambdaIntegration(manualEntryFn));
+
+    // /api/alerts
+    apiRoot.addResource('alerts').addMethod('GET', new apigw.LambdaIntegration(queryFn));
 
     // /api/summary, /api/reports/*, /api/export/csv
     apiRoot.addResource('summary').addMethod('GET', new apigw.LambdaIntegration(queryFn));

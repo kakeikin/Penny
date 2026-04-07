@@ -9,6 +9,7 @@ dynamodb = boto3.resource('dynamodb')
 ACCOUNTS_TABLE = os.environ.get('ACCOUNTS_TABLE', 'finance-accounts')
 ENTRIES_TABLE  = os.environ.get('ENTRIES_TABLE', 'finance-journal-entries')
 LINES_TABLE    = os.environ.get('LINES_TABLE', 'finance-journal-lines')
+BUDGETS_TABLE  = os.environ.get('BUDGETS_TABLE', 'finance-budgets')
 
 CORS = {'Access-Control-Allow-Origin': '*', 'Content-Type': 'application/json'}
 
@@ -132,5 +133,25 @@ def handler(event, context):
             'currency':  body.get('currency', 'CNY'),
         })
         return {'statusCode': 201, 'headers': CORS, 'body': json.dumps({'accountId': account_id})}
+
+    # POST /api/budgets
+    if method == 'POST' and path.endswith('/budgets'):
+        account_id    = body.get('accountId')
+        monthly_limit = float(body.get('monthlyLimit', 0))
+        name          = body.get('name', '')
+        if not account_id or monthly_limit <= 0:
+            return {'statusCode': 400, 'headers': CORS, 'body': json.dumps({'error': 'accountId and monthlyLimit required'})}
+        dynamodb.Table(BUDGETS_TABLE).put_item(Item={
+            'accountId':    account_id,
+            'monthlyLimit': str(monthly_limit),
+            'name':         name,
+        })
+        return {'statusCode': 200, 'headers': CORS, 'body': json.dumps({'ok': True})}
+
+    # DELETE /api/budgets/{accountId}
+    if method == 'DELETE' and '/budgets/' in path:
+        account_id = path.split('/budgets/')[-1]
+        dynamodb.Table(BUDGETS_TABLE).delete_item(Key={'accountId': account_id})
+        return {'statusCode': 200, 'headers': CORS, 'body': json.dumps({'ok': True})}
 
     return {'statusCode': 404, 'headers': CORS, 'body': json.dumps({'error': 'Not found'})}
