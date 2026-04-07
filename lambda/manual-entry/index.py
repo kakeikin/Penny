@@ -151,6 +151,8 @@ def handler(event, context):
     # DELETE /api/budgets/{accountId}
     if method == 'DELETE' and '/budgets/' in path:
         account_id = path.split('/budgets/')[-1]
+        if not account_id:
+            return {'statusCode': 400, 'headers': CORS, 'body': json.dumps({'error': 'accountId required'})}
         dynamodb.Table(BUDGETS_TABLE).delete_item(Key={'accountId': account_id})
         return {'statusCode': 200, 'headers': CORS, 'body': json.dumps({'ok': True})}
 

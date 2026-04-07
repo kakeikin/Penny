@@ -2,6 +2,7 @@ import boto3
 import json
 import os
 from collections import defaultdict
+from datetime import datetime
 from decimal import Decimal
 
 dynamodb = boto3.resource('dynamodb')
@@ -195,7 +196,6 @@ def handler(event, context):
 
     # GET /api/summary
     if path.endswith('/summary'):
-        from datetime import datetime
         now = datetime.utcnow()
         month_start = f"{now.year}-{now.month:02d}-01"
         entries = get_confirmed_entries(start_date=month_start)
@@ -233,7 +233,6 @@ def handler(event, context):
 
     # GET /api/reports/net-worth
     if 'net-worth' in path:
-        from datetime import datetime
         now = datetime.utcnow()
         monthly = []
         for i in range(6):
@@ -274,59 +273,74 @@ def handler(event, context):
 
     # GET /api/alerts
     if path.endswith('/alerts'):
-        from datetime import datetime
         budgets = dynamodb.Table(BUDGETS_TABLE).scan()['Items']
         if not budgets:
             return {'statusCode': 200, 'headers': CORS, 'body': json.dumps([])}
 
-        alerts_out = []
         now = datetime.utcnow()
 
+        # Build set of budget account IDs
+        budget_acct_ids = {b['accountId'] for b in budgets}
+
+        # Collect all relevant entries for the last 7 months
+        year_months = []
+        for i in range(7):
+            month_offset = now.month - i
+            if month_offset <= 0:
+                y = now.year - 1
+                m = month_offset + 12
+            else:
+                y = now.year
+                m = month_offset
+            year_months.append(f'{y}-{m:02d}')
+
+        # Fetch all confirmed entries for those months in one scan per month
+        all_relevant_entries = []
+        for ym in year_months:
+            entries = dynamodb.Table(ENTRIES_TABLE).scan(
+                FilterExpression='yearMonth = :ym AND #s = :confirmed',
+                ExpressionAttributeNames={'#s': 'status'},
+                ExpressionAttributeValues={':ym': ym, ':confirmed': 'CONFIRMED'},
+            )['Items']
+            for e in entries:
+                e['_ym'] = ym
+            all_relevant_entries.extend(entries)
+
+        # Batch-fetch all lines at once
+        lines_by_entry = get_lines_for_entries([e['entryId'] for e in all_relevant_entries])
+
+        # Build monthly spending per account
+        # monthly_spend[accountId][yearMonth] = total debit
+        monthly_spend = defaultdict(lambda: defaultdict(float))
+        for entry in all_relevant_entries:
+            ym = entry['_ym']
+            for line in lines_by_entry.get(entry['entryId'], []):
+                if line['accountId'] in budget_acct_ids and line['direction'] == 'DEBIT':
+                    monthly_spend[line['accountId']][ym] += float(line['amount'])
+
+        alerts_out = []
         for budget in budgets:
             acct_id = budget['accountId']
             limit   = float(budget['monthlyLimit'])
+            current_ym = year_months[0]
+            current_total = monthly_spend[acct_id][current_ym]
+            past_6_totals = [monthly_spend[acct_id][ym] for ym in year_months[1:7]]
+            # Include zero months in average (correct behavior)
+            avg = sum(past_6_totals) / len(past_6_totals) if past_6_totals else 0
 
-            # Collect spending for last 6 complete months + current month
-            monthly_totals = []
-            for i in range(7):  # 0 = current month, 1-6 = past months
-                m = (now.month - i - 1) % 12 + 1
-                y = now.year if (now.month - i) > 0 else now.year - 1
-                ym = f'{y}-{m:02d}'
-                entries = dynamodb.Table(ENTRIES_TABLE).scan(
-                    FilterExpression='yearMonth = :ym AND #s = :confirmed',
-                    ExpressionAttributeNames={'#s': 'status'},
-                    ExpressionAttributeValues={':ym': ym, ':confirmed': 'CONFIRMED'},
-                )['Items']
-                total = 0.0
-                for entry in entries:
-                    lines = dynamodb.Table(LINES_TABLE).query(
-                        KeyConditionExpression='entryId = :e',
-                        ExpressionAttributeValues={':e': entry['entryId']},
-                    )['Items']
-                    for line in lines:
-                        if line['accountId'] == acct_id and line['direction'] == 'DEBIT':
-                            total += float(line['amount'])
-                monthly_totals.append({'month': ym, 'total': total})
-
-            current_month_total = monthly_totals[0]['total']
-            past_6 = [m['total'] for m in monthly_totals[1:7] if m['total'] > 0]
-            if not past_6:
-                continue
-            avg = sum(past_6) / len(past_6)
-
-            over_limit = current_month_total > limit
-            over_avg   = avg > 0 and current_month_total > avg * 1.10
+            over_limit = current_total > limit
+            over_avg   = avg > 0 and current_total > avg * 1.10
 
             if over_limit or over_avg:
                 alerts_out.append({
                     'accountId':          acct_id,
                     'accountName':        budget.get('name', acct_id),
                     'monthlyLimit':       limit,
-                    'currentMonthTotal':  current_month_total,
+                    'currentMonthTotal':  current_total,
                     'sixMonthAverage':    round(avg, 2),
                     'overLimit':          over_limit,
                     'overAverage':        over_avg,
-                    'percentOverAverage': round((current_month_total / avg - 1) * 100, 1) if avg > 0 else 0,
+                    'percentOverAverage': round((current_total / avg - 1) * 100, 1) if avg > 0 else 0,
                 })
 
         return {'statusCode': 200, 'headers': CORS,

@@ -73,7 +73,7 @@ export class FinanceStack extends cdk.Stack {
       ENTRIES_TABLE: entriesTable.tableName,
       LINES_TABLE: linesTable.tableName,
       APP_BUCKET: appBucket.bucketName,
-      BUDGETS_TABLE: 'finance-budgets',
+      BUDGETS_TABLE: budgetsTable.tableName,
     };
 
     // ── Lambda Layer: Python dependencies ─────────────────────
