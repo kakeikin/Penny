@@ -24,10 +24,12 @@ async function dashboard(app) {
     const container = document.getElementById('alert-banners');
     if (!container) return;
     if (!alerts.length) { container.innerHTML = ''; return; }
+    const esc = s => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
     container.innerHTML = alerts.map(a => {
+      const name = esc(a.accountName);
       const msg = a.overLimit
-        ? `<strong>${a.accountName}</strong> exceeded monthly limit of ¥${a.monthlyLimit.toFixed(2)} — spent ¥${a.currentMonthTotal.toFixed(2)} this month.`
-        : `<strong>${a.accountName}</strong> is ${a.percentOverAverage}% above the 6-month average (¥${a.sixMonthAverage.toFixed(2)}/mo) — spent ¥${a.currentMonthTotal.toFixed(2)} this month.`;
+        ? `<strong>${name}</strong> exceeded monthly limit of ¥${a.monthlyLimit.toFixed(2)} — spent ¥${a.currentMonthTotal.toFixed(2)} this month.`
+        : `<strong>${name}</strong> is ${a.percentOverAverage}% above the 6-month average (¥${a.sixMonthAverage.toFixed(2)}/mo) — spent ¥${a.currentMonthTotal.toFixed(2)} this month.`;
       return `<div class="flex items-start gap-3 p-3 bg-amber-50 border border-amber-200 rounded-lg text-sm text-amber-900">
         <span class="text-lg">⚠️</span><span>${msg}</span>
       </div>`;
