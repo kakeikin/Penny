@@ -161,8 +161,8 @@ async function manualEntry(app) {
 window.setEntryType = function(type) {
   _entryType = type;
   const styles = {
-    expense:  { active: 'bg-red-50 text-red-700',    btn: 'bg-[#8aaa5e] hover:bg-[#7a9a4e]' },
-    income:   { active: 'bg-green-50 text-green-700', btn: 'bg-[#8aaa5e] hover:bg-[#7a9a4e]' },
+    expense:  { active: 'bg-red-50 text-red-700',    btn: 'bg-red-600 hover:bg-red-700' },
+    income:   { active: 'bg-green-50 text-green-700', btn: 'bg-green-600 hover:bg-green-700' },
     transfer: { active: 'bg-blue-50 text-blue-700', btn: 'bg-blue-600 hover:bg-blue-700' },
   };
   ['expense', 'income', 'transfer'].forEach(t => {
