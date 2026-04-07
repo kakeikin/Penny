@@ -50,7 +50,7 @@ def handler(event, context):
     # Build CSV
     output = io.StringIO()
     writer = csv.writer(output)
-    writer.writerow(['Date', 'Description', 'Source', 'Account', 'Direction', 'Amount', 'Note', 'Tags'])
+    writer.writerow(['Date', 'Description', 'Source', 'Account', 'Direction', 'Amount', 'Note', 'Tags', 'Original Amount', 'Original Currency'])
 
     for entry in entries:
         lines = lines_table.query(
@@ -58,6 +58,8 @@ def handler(event, context):
             ExpressionAttributeValues={':e': entry['entryId']},
         )['Items']
         for line in lines:
+            orig_curr = line.get('originalCurrency', '')
+            orig_amt = f"{line.get('originalAmount', '')}" if orig_curr else ''
             writer.writerow([
                 entry['date'],
                 entry['description'],
@@ -67,6 +69,8 @@ def handler(event, context):
                 float(line['amount']) if not isinstance(line['amount'], Decimal) else float(line['amount']),
                 line.get('note', ''),
                 ','.join(entry.get('tags', [])),
+                orig_amt,
+                orig_curr,
             ])
 
     return {

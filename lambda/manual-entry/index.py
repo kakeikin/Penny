@@ -63,14 +63,19 @@ def handler(event, context):
         })
 
         for i, line in enumerate(lines):
-            lines_table.put_item(Item={
+            item = {
                 'entryId':   entry_id,
                 'lineId':    f'{i:03d}',
                 'accountId': line['accountId'],
                 'direction': line['direction'],
                 'amount':    str(line['amount']),
                 'note':      line.get('note', ''),
-            })
+            }
+            if line.get('originalCurrency') and line.get('originalAmount'):
+                item['originalCurrency'] = line['originalCurrency']
+                item['originalAmount']   = str(line['originalAmount'])
+                item['exchangeRate']     = str(line.get('exchangeRate', '1'))
+            lines_table.put_item(Item=item)
 
         return {'statusCode': 201, 'headers': CORS, 'body': json.dumps({'entryId': entry_id})}
 
