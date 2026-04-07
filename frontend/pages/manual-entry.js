@@ -109,6 +109,13 @@ async function manualEntry(app) {
           </div>
         </div>
 
+        <!-- Tags -->
+        <div class="mb-4">
+          <label class="text-sm text-gray-600 font-medium">Tags <span class="text-gray-400 font-normal">(optional, comma-separated)</span></label>
+          <input id="me-tags" type="text" class="mt-1 w-full border rounded-lg px-3 py-2 text-sm"
+            placeholder="e.g. food, subscription, work" />
+        </div>
+
         <!-- Note -->
         <div class="mb-6">
           <label class="text-sm text-gray-600 font-medium">Note <span class="text-gray-400 font-normal">(optional)</span></label>
@@ -154,6 +161,7 @@ window.submitEntry = async function() {
   const date   = document.getElementById('me-date').value;
   const description = document.getElementById('me-desc').value.trim();
   const note   = document.getElementById('me-note').value;
+  const tags = document.getElementById('me-tags').value.split(',').map(t => t.trim()).filter(Boolean);
   const err    = document.getElementById('me-error');
 
   err.classList.add('hidden');
@@ -186,7 +194,7 @@ window.submitEntry = async function() {
   }
 
   try {
-    await API.post('/api/entries', { date, description, lines });
+    await API.post('/api/entries', { date, description, lines, tags });
     location.hash = '#transactions';
   } catch (e) {
     err.textContent = e.message;

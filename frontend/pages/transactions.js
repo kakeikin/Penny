@@ -11,6 +11,9 @@ async function transactions(app) {
         <span class="text-gray-400 text-sm">to</span>
         <input id="filter-end" type="date" class="border rounded-lg px-3 py-1.5 text-sm" />
         <button onclick="loadEntries()" class="btn-primary text-sm">Filter</button>
+        <select id="filter-tag" onchange="loadEntries()" class="border rounded-lg px-3 py-1.5 text-sm text-gray-600">
+          <option value="">All tags</option>
+        </select>
         <a id="csv-link" class="btn-ghost text-sm ml-auto" download="transactions.csv">Export CSV</a>
       </div>
       <div id="entries-list" class="space-y-2"></div>
@@ -92,6 +95,11 @@ async function transactions(app) {
           </div>
         </div>
 
+        <div class="mb-3">
+          <label class="text-sm text-gray-600 font-medium">Tags <span class="text-gray-400 font-normal">(comma-separated)</span></label>
+          <input id="edit-tags" type="text" class="mt-1 w-full border rounded-lg px-3 py-2 text-sm" placeholder="e.g. food, rent" />
+        </div>
+
         <div class="mb-5">
           <label class="text-sm text-gray-600 font-medium">Note <span class="text-gray-400 font-normal">(optional)</span></label>
           <input id="edit-note" type="text" class="mt-1 w-full border rounded-lg px-3 py-2 text-sm" placeholder="Add a note..." />
@@ -164,6 +172,8 @@ async function transactions(app) {
     const q = [];
     if (start) q.push(`startDate=${start}`);
     if (end)   q.push(`endDate=${end}`);
+    const tag = document.getElementById('filter-tag').value;
+    if (tag) q.push(`tag=${encodeURIComponent(tag)}`);
     if (q.length) url += '?' + q.join('&');
 
     const csvQ = q.join('&');
@@ -207,6 +217,7 @@ async function transactions(app) {
                 <span class="text-xs text-gray-400">${s.category}</span>
               </div>
               <p class="font-medium text-gray-800 truncate">${e.description}</p>
+              ${(e.tags || []).length ? `<div class="flex flex-wrap gap-1 mt-1">${(e.tags||[]).map(t => `<span class="text-xs bg-purple-50 text-purple-700 px-2 py-0.5 rounded-full">#${t}</span>`).join('')}</div>` : ''}
               <p class="text-xs text-gray-400">${e.date} · ${e.source}</p>
             </div>
             <div class="flex items-center gap-3 ml-4 shrink-0">
@@ -239,6 +250,7 @@ async function transactions(app) {
     // Pre-fill basic fields
     document.getElementById('edit-date').value = entry.date;
     document.getElementById('edit-desc').value = entry.description;
+    document.getElementById('edit-tags').value = (entry.tags || []).join(', ');
     document.getElementById('edit-note').value = '';
     document.getElementById('edit-error').classList.add('hidden');
 
@@ -318,6 +330,7 @@ async function transactions(app) {
     const date   = document.getElementById('edit-date').value;
     const description = document.getElementById('edit-desc').value.trim();
     const note   = document.getElementById('edit-note').value;
+    const tags = document.getElementById('edit-tags').value.split(',').map(t => t.trim()).filter(Boolean);
     const err    = document.getElementById('edit-error');
     err.classList.add('hidden');
 
@@ -346,7 +359,7 @@ async function transactions(app) {
     }
 
     try {
-      await API.put(`/api/entries/${_editId}`, { date, description, lines });
+      await API.put(`/api/entries/${_editId}`, { date, description, lines, tags });
       closeEditModal();
       loadEntries();
     } catch (e) {
@@ -364,4 +377,12 @@ async function transactions(app) {
     accountMap = Object.fromEntries(allAccounts.map(a => [a.accountId, a]));
   } catch(e) {}
   loadEntries();
+  API.get('/api/tags').then(tags => {
+    const sel = document.getElementById('filter-tag');
+    if (sel) tags.forEach(t => {
+      const opt = document.createElement('option');
+      opt.value = t; opt.textContent = '#' + t;
+      sel.appendChild(opt);
+    });
+  }).catch(() => {});
 }

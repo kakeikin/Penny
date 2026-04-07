@@ -102,6 +102,11 @@ async function upload(app) {
           </div>
         </div>
 
+        <div class="mb-3">
+          <label class="text-sm text-gray-600 font-medium">Tags <span class="text-gray-400 font-normal">(comma-separated)</span></label>
+          <input id="ue-tags" type="text" class="mt-1 w-full border rounded-lg px-3 py-2 text-sm" placeholder="e.g. food, rent" />
+        </div>
+
         <div class="mb-5">
           <label class="text-sm text-gray-600 font-medium">Note <span class="text-gray-400 font-normal">(optional)</span></label>
           <input id="ue-note" type="text" class="mt-1 w-full border rounded-lg px-3 py-2 text-sm" placeholder="Add a note..." />
@@ -234,6 +239,7 @@ async function upload(app) {
 
     document.getElementById('ue-date').value = entry.date;
     document.getElementById('ue-desc').value = entry.description;
+    document.getElementById('ue-tags').value = (entry.tags || []).join(', ');
     document.getElementById('ue-note').value = '';
     document.getElementById('ue-error').classList.add('hidden');
 
@@ -297,6 +303,7 @@ async function upload(app) {
     const date   = document.getElementById('ue-date').value;
     const description = document.getElementById('ue-desc').value.trim();
     const note   = document.getElementById('ue-note').value;
+    const tags = document.getElementById('ue-tags').value.split(',').map(t => t.trim()).filter(Boolean);
     const err    = document.getElementById('ue-error');
     err.classList.add('hidden');
 
@@ -325,7 +332,7 @@ async function upload(app) {
     }
 
     try {
-      await API.put(`/api/entries/${_ueEditId}`, { date, description, lines });
+      await API.put(`/api/entries/${_ueEditId}`, { date, description, lines, tags });
       closeUploadEditModal();
       // Refresh pending list
       const updated = await API.get('/api/entries?status=PENDING').catch(() => []);
