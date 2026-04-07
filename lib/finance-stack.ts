@@ -210,6 +210,33 @@ export class FinanceStack extends cdk.Stack {
     // /api/alerts
     apiRoot.addResource('alerts').addMethod('GET', new apigw.LambdaIntegration(queryFn));
 
+    // /api/advisor
+    const advisorFn = new lambda.Function(this, 'AdvisorLambda', {
+      runtime: lambda.Runtime.PYTHON_3_12,
+      handler: 'index.handler',
+      code: lambda.Code.fromAsset('lambda/advisor'),
+      layers: [pyLayer],
+      environment: lambdaEnv,
+      timeout: cdk.Duration.seconds(60),
+      memorySize: 512,
+    });
+
+    accountsTable.grantReadData(advisorFn);
+    entriesTable.grantReadData(advisorFn);
+    linesTable.grantReadData(advisorFn);
+    advisorFn.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['bedrock:InvokeModel'],
+      resources: ['*'],
+    }));
+    advisorFn.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['aws-marketplace:ViewSubscriptions', 'aws-marketplace:Subscribe', 'aws-marketplace:Unsubscribe'],
+      resources: ['*'],
+    }));
+
+    const advisorIntegration = new apigw.LambdaIntegration(advisorFn);
+    const advisor = apiRoot.addResource('advisor');
+    advisor.addMethod('POST', advisorIntegration);
+
     // /api/summary, /api/reports/*, /api/export/csv
     apiRoot.addResource('summary').addMethod('GET', new apigw.LambdaIntegration(queryFn));
     const reportsRes = apiRoot.addResource('reports');
