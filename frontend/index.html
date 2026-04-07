@@ -11,7 +11,7 @@
   <style>
     .card  { @apply bg-white rounded-xl shadow-sm border border-gray-100 p-6; }
     .btn   { @apply px-4 py-2 rounded-lg text-sm font-medium transition; }
-    .btn-primary { @apply btn bg-blue-600 text-white hover:bg-blue-700; }
+    .btn-primary { @apply btn bg-green-600 text-white hover:bg-green-700; }
     .btn-ghost   { @apply btn text-gray-600 hover:bg-gray-100; }
     .badge-debit  { @apply inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-red-100 text-red-700; }
     .badge-credit { @apply inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-green-100 text-green-700; }
@@ -24,7 +24,7 @@
   <div class="flex h-screen overflow-hidden">
     <nav class="w-56 bg-white border-r border-gray-200 flex flex-col p-4 gap-1 shrink-0">
       <div class="flex items-center gap-2 mb-6 px-2">
-        <div class="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center text-white font-bold text-sm">P</div>
+        <div class="w-8 h-8 bg-green-600 rounded-lg flex items-center justify-center text-white font-bold text-sm">P</div>
         <span class="font-bold text-gray-900">Penny</span>
       </div>
       <a href="#advisor"       class="nav-link" data-page="advisor">🤖 Advisor</a>
@@ -54,7 +54,7 @@
       document.querySelectorAll('.nav-link').forEach(a => {
         const active = a.dataset.page === page;
         a.className = active
-          ? 'nav-link block px-3 py-2 rounded-lg text-sm font-medium bg-blue-50 text-blue-700'
+          ? 'nav-link block px-3 py-2 rounded-lg text-sm font-medium bg-green-50 text-green-700'
           : 'nav-link block px-3 py-2 rounded-lg text-sm text-gray-600 hover:bg-gray-50';
       });
     }
