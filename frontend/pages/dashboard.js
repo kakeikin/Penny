@@ -4,6 +4,7 @@ async function dashboard(app) {
       <h1 class="text-2xl font-bold text-gray-900 mb-6">Dashboard</h1>
       <div id="dash-loading" class="text-gray-400">Loading...</div>
       <div id="dash-content" class="hidden space-y-6">
+        <div id="alert-banners" class="space-y-2 mb-6"></div>
         <div class="grid grid-cols-2 lg:grid-cols-4 gap-4" id="summary-cards"></div>
         <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
           <div class="card">
@@ -18,8 +19,26 @@ async function dashboard(app) {
       </div>
     </div>`;
 
+  async function loadAlerts() {
+    const alerts = await API.get('/api/alerts').catch(() => []);
+    const container = document.getElementById('alert-banners');
+    if (!container) return;
+    if (!alerts.length) { container.innerHTML = ''; return; }
+    container.innerHTML = alerts.map(a => {
+      const msg = a.overLimit
+        ? `<strong>${a.accountName}</strong> exceeded monthly limit of ¥${a.monthlyLimit.toFixed(2)} — spent ¥${a.currentMonthTotal.toFixed(2)} this month.`
+        : `<strong>${a.accountName}</strong> is ${a.percentOverAverage}% above the 6-month average (¥${a.sixMonthAverage.toFixed(2)}/mo) — spent ¥${a.currentMonthTotal.toFixed(2)} this month.`;
+      return `<div class="flex items-start gap-3 p-3 bg-amber-50 border border-amber-200 rounded-lg text-sm text-amber-900">
+        <span class="text-lg">⚠️</span><span>${msg}</span>
+      </div>`;
+    }).join('');
+  }
+
   try {
-    const data = await API.get('/api/summary');
+    const [data] = await Promise.all([
+      API.get('/api/summary'),
+      loadAlerts(),
+    ]);
     document.getElementById('dash-loading').remove();
     document.getElementById('dash-content').classList.remove('hidden');
 
