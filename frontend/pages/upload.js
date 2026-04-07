@@ -63,6 +63,30 @@ async function upload(app) {
           </div>
         </div>
 
+        <!-- Foreign Currency -->
+        <div class="mb-3">
+          <label class="flex items-center gap-2 text-sm text-gray-600 cursor-pointer">
+            <input type="checkbox" id="ue-foreign" onchange="toggleUploadForeignCurrency()" class="rounded" />
+            <span>Paid in foreign currency</span>
+          </label>
+          <div id="ue-foreign-fields" class="hidden mt-2 grid grid-cols-3 gap-2">
+            <div>
+              <label class="text-xs text-gray-500">Original Amount</label>
+              <input id="ue-orig-amount" type="number" step="0.01" class="mt-1 w-full border rounded-lg px-3 py-2 text-sm" placeholder="0.00" />
+            </div>
+            <div>
+              <label class="text-xs text-gray-500">Currency</label>
+              <select id="ue-orig-currency" class="mt-1 w-full border rounded-lg px-3 py-2 text-sm">
+                <option>USD</option><option>EUR</option><option>GBP</option><option>JPY</option><option>HKD</option><option>CAD</option><option>AUD</option>
+              </select>
+            </div>
+            <div>
+              <label class="text-xs text-gray-500">Exchange Rate</label>
+              <input id="ue-rate" type="number" step="0.0001" class="mt-1 w-full border rounded-lg px-3 py-2 text-sm" placeholder="7.25" />
+            </div>
+          </div>
+        </div>
+
         <div id="ue-expense-fields" class="mb-3">
           <div class="grid grid-cols-2 gap-3">
             <div>
@@ -273,6 +297,20 @@ async function upload(app) {
 
     document.getElementById('ue-amount').value = amount.toFixed(2);
     setUploadEditType(detectedType);
+
+    // Pre-fill foreign currency fields
+    const debitLine = (entry.lines || []).find(l => l.direction === 'DEBIT' && l.originalCurrency);
+    if (debitLine) {
+      document.getElementById('ue-foreign').checked = true;
+      document.getElementById('ue-foreign-fields').classList.remove('hidden');
+      document.getElementById('ue-orig-amount').value = debitLine.originalAmount || '';
+      document.getElementById('ue-orig-currency').value = debitLine.originalCurrency || 'USD';
+      document.getElementById('ue-rate').value = debitLine.exchangeRate || '';
+    } else {
+      document.getElementById('ue-foreign').checked = false;
+      document.getElementById('ue-foreign-fields').classList.add('hidden');
+    }
+
     document.getElementById('upload-edit-modal').classList.remove('hidden');
   };
 
@@ -296,6 +334,11 @@ async function upload(app) {
     });
     const btn = document.getElementById('ue-save-btn');
     if (btn) btn.className = `flex-1 py-2 rounded-lg text-sm font-semibold text-white transition-colors ${styles[type].btn}`;
+  };
+
+  window.toggleUploadForeignCurrency = function() {
+    const checked = document.getElementById('ue-foreign').checked;
+    document.getElementById('ue-foreign-fields').classList.toggle('hidden', !checked);
   };
 
   window.saveUploadEdit = async () => {
@@ -329,6 +372,16 @@ async function upload(app) {
         { direction: 'DEBIT',  accountId: toId,   amount, note },
         { direction: 'CREDIT', accountId: fromId,  amount, note: '' },
       ];
+    }
+
+    const isForeign = document.getElementById('ue-foreign')?.checked;
+    if (isForeign && lines.length > 0) {
+      const debitIdx = lines.findIndex(l => l.direction === 'DEBIT');
+      if (debitIdx >= 0) {
+        lines[debitIdx].originalAmount   = parseFloat(document.getElementById('ue-orig-amount').value) || null;
+        lines[debitIdx].originalCurrency = document.getElementById('ue-orig-currency').value;
+        lines[debitIdx].exchangeRate     = parseFloat(document.getElementById('ue-rate').value) || 1;
+      }
     }
 
     try {

@@ -55,6 +55,30 @@ async function manualEntry(app) {
           </div>
         </div>
 
+        <!-- Foreign Currency -->
+        <div class="mb-4">
+          <label class="flex items-center gap-2 text-sm text-gray-600 cursor-pointer">
+            <input type="checkbox" id="me-foreign" onchange="toggleForeignCurrency()" class="rounded" />
+            <span>Paid in foreign currency</span>
+          </label>
+          <div id="me-foreign-fields" class="hidden mt-2 grid grid-cols-3 gap-2">
+            <div>
+              <label class="text-xs text-gray-500">Original Amount</label>
+              <input id="me-orig-amount" type="number" step="0.01" class="mt-1 w-full border rounded-lg px-3 py-2 text-sm" placeholder="0.00" />
+            </div>
+            <div>
+              <label class="text-xs text-gray-500">Currency</label>
+              <select id="me-orig-currency" class="mt-1 w-full border rounded-lg px-3 py-2 text-sm">
+                <option>USD</option><option>EUR</option><option>GBP</option><option>JPY</option><option>HKD</option><option>CAD</option><option>AUD</option>
+              </select>
+            </div>
+            <div>
+              <label class="text-xs text-gray-500">Exchange Rate</label>
+              <input id="me-rate" type="number" step="0.0001" class="mt-1 w-full border rounded-lg px-3 py-2 text-sm" placeholder="7.25" />
+            </div>
+          </div>
+        </div>
+
         <!-- Expense fields -->
         <div id="expense-fields">
           <div class="grid grid-cols-2 gap-4 mb-4">
@@ -156,6 +180,11 @@ window.setEntryType = function(type) {
   if (submitBtn) submitBtn.className = `w-full py-2.5 rounded-lg text-sm font-semibold text-white transition-colors shadow-sm ${styles[type].btn}`;
 };
 
+window.toggleForeignCurrency = function() {
+  const checked = document.getElementById('me-foreign').checked;
+  document.getElementById('me-foreign-fields').classList.toggle('hidden', !checked);
+};
+
 window.submitEntry = async function() {
   const amount = parseFloat(document.getElementById('me-amount').value);
   const date   = document.getElementById('me-date').value;
@@ -191,6 +220,13 @@ window.submitEntry = async function() {
       { direction: 'DEBIT',  accountId: toId,   amount, note },
       { direction: 'CREDIT', accountId: fromId,  amount, note: '' },
     ];
+  }
+
+  const isForeign = document.getElementById('me-foreign')?.checked;
+  if (isForeign && lines.length > 0) {
+    lines[0].originalAmount   = parseFloat(document.getElementById('me-orig-amount').value) || null;
+    lines[0].originalCurrency = document.getElementById('me-orig-currency').value;
+    lines[0].exchangeRate     = parseFloat(document.getElementById('me-rate').value) || 1;
   }
 
   try {
