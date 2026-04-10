@@ -104,15 +104,4 @@ Every confirmed entry satisfies: `SUM(DEBIT lines) == SUM(CREDIT lines)` — enf
 | Scheduling | EventBridge |
 | Notifications | SNS |
 
----
 
-## Academic Poster
-
-The showcase poster (`docs/poster.html`) was presented at the Northeastern University CS6620 Cloud Computing end-of-semester showcase.
-
----
-
-## Authors
-
-Jiaxin Jia · Advised by Professor Zhuoqun Cheng  
-Khoury College of Computer Sciences, Northeastern University
