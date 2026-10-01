@@ -9,8 +9,8 @@ beforeAll(() => {
   template = Template.fromStack(stack);
 });
 
-test('creates three DynamoDB tables', () => {
-  template.resourceCountIs('AWS::DynamoDB::Table', 3);
+test('creates seven DynamoDB tables', () => {
+  template.resourceCountIs('AWS::DynamoDB::Table', 7);
 });
 
 test('finance-accounts table has correct partition key', () => {
@@ -51,8 +51,8 @@ test('creates S3 bucket with public access blocked', () => {
   });
 });
 
-test('creates five Lambda functions', () => {
-  template.resourceCountIs('AWS::Lambda::Function', 6);
+test('creates nine app Lambda functions plus the S3 notifications handler', () => {
+  template.resourceCountIs('AWS::Lambda::Function', 10);
 });
 
 test('creates API Gateway', () => {

@@ -1,8 +1,9 @@
-import sys, os, json
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../lambda/query'))
+from lambda_loader import load_lambda
+
+query = load_lambda('query')
 
 def test_build_account_tree():
-    from index import build_account_tree
+    build_account_tree = query.build_account_tree
     accounts = [
         {'accountId': '1000', 'name': 'Assets', 'type': 'ASSET', 'parentId': None},
         {'accountId': '1100', 'name': 'Bank', 'type': 'ASSET', 'parentId': '1000'},
@@ -14,7 +15,7 @@ def test_build_account_tree():
     assert tree[0]['children'][0]['accountId'] == '1100'
 
 def test_income_statement_sums():
-    from index import compute_income_statement
+    compute_income_statement = query.compute_income_statement
     entries = [
         {'entryId': 'e1', 'date': '2026-04-01', 'status': 'CONFIRMED'},
     ]
@@ -34,7 +35,7 @@ def test_income_statement_sums():
     assert result['netIncome'] == 5000.0
 
 def test_balance_sheet_assets():
-    from index import compute_balance_sheet
+    compute_balance_sheet = query.compute_balance_sheet
     entries = [{'entryId': 'e1'}]
     lines_by_entry = {
         'e1': [

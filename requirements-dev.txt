@@ -1,0 +1,5 @@
+boto3==1.43.106
+pypdf==6.19.0
+pytest==8.4.2
+pywebpush==2.3.0
+requests==2.34.2

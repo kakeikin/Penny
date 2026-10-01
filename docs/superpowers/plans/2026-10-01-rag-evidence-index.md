@@ -38,7 +38,8 @@
 | `scripts/backfill_index.py` | create | Write `text/` docs for pre-existing uploads |
 | `scripts/delete_document_vectors.py` | create | Cleanup CLI around `delete_document_vectors()` |
 | `.github/workflows/ci.yml` | create | pytest + jest + cdk synth |
-| `test/lambda/conftest.py` | create | Order-independent Lambda loader; puts `penny_common` on the path |
+| `test/lambda/lambda_loader.py` | create | `load_lambda()`: order-independent import of `lambda/<name>/index.py` |
+| `test/lambda/conftest.py` | create | `lambda_module` fixture; default AWS region; puts `penny_common` on the path |
 | `test/lambda/pdf_fixtures.py` | create | Build tiny PDFs in memory |
 | `test/lambda/test_query.py` | modify | Use the loader (fixes an existing order-dependence bug) |
 | `test/lambda/test_penny_common.py` | create | masking / textnorm / pdftext / chunking / textdoc tests |
@@ -68,8 +69,10 @@ Two existing problems must be fixed before adding anything:
 - (b) Every Lambda's entry file is `index.py`. `test_query.py` puts `lambda/query` on `sys.path` at import time, so its result depends on file order. Running `pytest test/lambda/test_query.py test/lambda/test_parse.py test/lambda/test_confirm.py test/lambda/test_manual_entry.py` fails 3 tests today.
 
 **Files:**
-- Create: `requirements-dev.txt`, `test/lambda/conftest.py`
+- Create: `requirements-dev.txt`, `test/lambda/lambda_loader.py`, `test/lambda/conftest.py`
 - Modify: `test/lambda/test_query.py:1-2, 5, 17, 37`, `test/finance-stack.test.ts:12-14, 54-56`
+
+> **As implemented (post-review):** `load_lambda` lives in `test/lambda/lambda_loader.py` (not conftest, so nothing does `from conftest import`); conftest also does `os.environ.setdefault('AWS_DEFAULT_REGION', 'us-east-1')`; `requirements-dev.txt` additionally pins `pywebpush==2.3.0` and `requests==2.34.2` (imported by existing Lambdas/tests). `test_query.py` uses `from lambda_loader import load_lambda`.
 
 - [ ] **Step 1: Reproduce the order bug**
 
