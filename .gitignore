@@ -6,3 +6,4 @@ cdk.out/
 dist/
 .DS_Store
 lambda/layer/python/
+.layer-build/

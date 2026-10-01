@@ -193,6 +193,8 @@ The current `lambda/layer/python/` was built on macOS (`*-darwin.so` for cryptog
 - Create: `lambda/layer/requirements.txt`, `lambda/common/penny_common/__init__.py`
 - Rewrite: `scripts/build-layer.sh`
 
+> **As implemented (post-review):** the script preflights Docker (`command -v docker`, `docker info`), builds into a repo-root `.layer-build/python` (gitignored, outside the CDK asset dir), rsyncs `penny_common` without `__pycache__`, and only then swaps it into `lambda/layer/python` — a failed build leaves the previous layer intact. `requirements.txt` has a leading comment explaining the boto3 pin. In `lib/finance-stack.ts` the `PyDepsLayer` gained `compatibleArchitectures: [lambda.Architecture.X86_64]` and the new description (so Task 11 Step 5 only changes the ParseLambda timeout).
+
 - [ ] **Step 1: Create `lambda/layer/requirements.txt`**
 
 ```text
@@ -1652,7 +1654,7 @@ import * as sqs from 'aws-cdk-lib/aws-sqs';
 
 ```
 
-- [ ] **Step 5: Update the layer description and the ParseLambda timeout.** Change `description: 'anthropic + boto3',` to `description: 'pinned boto3, pypdf, pywebpush + penny_common',`. In the `ParseLambda` props, change `timeout: cdk.Duration.seconds(60),` to `timeout: cdk.Duration.seconds(120),` (pypdf plus a longer Claude response).
+- [ ] **Step 5: Update the ParseLambda timeout.** (The layer description was already updated in Task 2.) In the `ParseLambda` props, change `timeout: cdk.Duration.seconds(60),` to `timeout: cdk.Duration.seconds(120),` (pypdf plus a longer Claude response).
 
 - [ ] **Step 6: Add the RAG resources** immediately before `    // ── API Gateway ───────────────────────────────────────────`:
 
