@@ -361,3 +361,5 @@ Still to verify:
 - **Deployment constraint:** because there is no auth, the public deployment (CloudFront live demo) must only contain synthetic data. Real financial documents must never be uploaded to it. Presigned evidence URLs expire after 5 minutes.
 - Evidence for image receipts and scanned PDF pages is not independently validated.
 - Citation validator checks presence, not correctness, of citations.
+- Masking misses identifiers printed with internal spaces or dashes (`4111 1111 1111 1111`); compact `YYYYMMDD` dates are masked as identifiers by design.
+- Masking is context-dependent (an 8-digit run followed by `.90` is treated as an amount), so in rare cases masked evidence text and masked chunk text differ and the chunkKey backfill leaves `chunkKey` null. This fails safe.

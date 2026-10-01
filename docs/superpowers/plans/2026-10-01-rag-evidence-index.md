@@ -13,7 +13,7 @@
 **Spec:** `docs/superpowers/specs/2026-10-01-penny-rag-evidence-design.md`
 **Later plans:** Plan 2 — Advisor agent (Converse tool use, `search_documents`, citation validator). Plan 3 — Frontend evidence UI, eval harness, README.
 
-**Pre-verified:** All code in this plan was run in a scratch copy of the repo before writing. Expected results: 67 pytest tests passing (20 existing + 47 new), 14 jest tests passing, and the layer building in Docker with Linux `.so` files.
+**Pre-verified:** All code in this plan was run in a scratch copy of the repo before writing. Expected results: 73 pytest tests passing (20 existing + 53 new), 14 jest tests passing, and the layer building in Docker with Linux `.so` files.
 
 ---
 
@@ -252,6 +252,8 @@ git commit -m "build: build Lambda layer in SAM Docker image with pinned deps"
 - Create: `lambda/common/penny_common/masking.py`, `lambda/common/penny_common/textnorm.py`
 - Test: `test/lambda/test_penny_common.py`
 
+> **As implemented (post-review):** the masking regex is `(?<!\d)(?<!\d[.,])(\d{8,})(?!\d)(?![.,]\d)`. Only `.`/`,` adjacency exempts a run, so `12345678-9` no longer leaks. `mask_identifiers(None)` returns `''`. `normalize()` applies NFKC, strips zero-width characters, and casefolds. Six more tests pin these behaviours, so `test_penny_common.py` has 11 tests after this task and every later expected count is 6 higher than originally written.
+
 - [ ] **Step 1: Write failing tests** — create `test/lambda/test_penny_common.py`:
 
 ```python
@@ -429,7 +431,7 @@ def extract_pdf_pages(data: bytes) -> list:
 - [ ] **Step 5: Run to verify pass**
 
 Run: `python -m pytest test/lambda/test_penny_common.py -q`
-Expected: `6 passed`
+Expected: `12 passed`
 
 - [ ] **Step 6: Commit (user)**
 
@@ -627,7 +629,7 @@ def chunk_document(doc: dict) -> list:
 - [ ] **Step 4: Run to verify pass**
 
 Run: `python -m pytest test/lambda/test_penny_common.py -q`
-Expected: `19 passed`
+Expected: `25 passed`
 
 - [ ] **Step 5: Commit (user)**
 
@@ -833,7 +835,7 @@ def delete_document_vectors(s3, s3vectors, bucket: str, vector_bucket: str, inde
 - [ ] **Step 6: Run to verify pass**
 
 Run: `python -m pytest test/lambda/test_penny_common.py test/lambda/test_penny_vectors.py -q`
-Expected: `25 passed`
+Expected: `31 passed`
 
 - [ ] **Step 7: Commit (user)**
 
@@ -1181,7 +1183,7 @@ After the inner `for i, line in enumerate(entry['lines']):` loop (at function in
 - [ ] **Step 10: Run all tests**
 
 Run: `AWS_DEFAULT_REGION=us-east-1 python -m pytest test/lambda -q -p no:cacheprovider`
-Expected: `55 passed`
+Expected: `61 passed`
 
 - [ ] **Step 11: Commit (user)**
 
@@ -1406,7 +1408,7 @@ def handler(event, context):
 - [ ] **Step 4: Run to verify pass**
 
 Run: `AWS_DEFAULT_REGION=us-east-1 python -m pytest test/lambda -q -p no:cacheprovider`
-Expected: `60 passed`
+Expected: `66 passed`
 
 - [ ] **Step 5: Commit (user)**
 
@@ -1547,7 +1549,7 @@ with:
 - [ ] **Step 4: Run to verify pass**
 
 Run: `AWS_DEFAULT_REGION=us-east-1 python -m pytest test/lambda -q -p no:cacheprovider`
-Expected: `64 passed`
+Expected: `70 passed`
 
 - [ ] **Step 5: Commit (user)**
 
@@ -1993,7 +1995,7 @@ if __name__ == '__main__':
 - [ ] **Step 5: Run all Python tests**
 
 Run: `AWS_DEFAULT_REGION=us-east-1 python -m pytest test/lambda -q -p no:cacheprovider`
-Expected: `67 passed`
+Expected: `73 passed`
 Run: `python scripts/delete_document_vectors.py --help`
 Expected: usage text printed, exit 0
 
