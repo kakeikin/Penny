@@ -13,7 +13,7 @@
 **Spec:** `docs/superpowers/specs/2026-10-01-penny-rag-evidence-design.md`
 **Later plans:** Plan 2 — Advisor agent (Converse tool use, `search_documents`, citation validator). Plan 3 — Frontend evidence UI, eval harness, README.
 
-**Pre-verified:** All code in this plan was run in a scratch copy of the repo before writing. Expected results: 73 pytest tests passing (20 existing + 53 new), 14 jest tests passing, and the layer building in Docker with Linux `.so` files.
+**Pre-verified:** All code in this plan was run in a scratch copy of the repo before writing. Expected results: 79 pytest tests passing (20 existing + 59 new), 14 jest tests passing, and the layer building in Docker with Linux `.so` files.
 
 ---
 
@@ -338,6 +338,8 @@ git commit -m "feat: add identifier masking and text normalization helpers"
 
 ### Task 4: `penny_common.pdftext` — per-page PDF text and scanned-page detection
 
+> **As implemented (post-review):** `extract_pdf_pages` raises `PdfTextError(reason)` (`'malformed'` / `'encrypted'`) when the whole document can't be read. If a single page's `extract_text()` raises, that page falls back to `extractor: 'claude'`. The threshold's blind spots are documented on `SCANNED_MIN_CHARS`. Tests cover page numbering, the 19/20 boundary, whitespace-only pages, the per-page fallback, malformed input, and password-protected PDFs, so `test_penny_common.py` has 18 tests after this task. **Consequences for later tasks:** Task 8 must catch `PdfTextError` in ParseLambda and fall back to `pages = []`, so bookkeeping proceeds exactly as before RAG with no evidence, and must skip the text doc when there are no pages. Task 12's `build_pages` must catch it and skip the file. Every later expected count is 6 higher again.
+
 **Files:**
 - Create: `lambda/common/penny_common/pdftext.py`, `test/lambda/pdf_fixtures.py`
 - Test: `test/lambda/test_penny_common.py` (append)
@@ -629,7 +631,7 @@ def chunk_document(doc: dict) -> list:
 - [ ] **Step 4: Run to verify pass**
 
 Run: `python -m pytest test/lambda/test_penny_common.py -q`
-Expected: `25 passed`
+Expected: `31 passed`
 
 - [ ] **Step 5: Commit (user)**
 
@@ -835,7 +837,7 @@ def delete_document_vectors(s3, s3vectors, bucket: str, vector_bucket: str, inde
 - [ ] **Step 6: Run to verify pass**
 
 Run: `python -m pytest test/lambda/test_penny_common.py test/lambda/test_penny_vectors.py -q`
-Expected: `31 passed`
+Expected: `37 passed`
 
 - [ ] **Step 7: Commit (user)**
 
@@ -1183,7 +1185,7 @@ After the inner `for i, line in enumerate(entry['lines']):` loop (at function in
 - [ ] **Step 10: Run all tests**
 
 Run: `AWS_DEFAULT_REGION=us-east-1 python -m pytest test/lambda -q -p no:cacheprovider`
-Expected: `61 passed`
+Expected: `67 passed`
 
 - [ ] **Step 11: Commit (user)**
 
@@ -1408,7 +1410,7 @@ def handler(event, context):
 - [ ] **Step 4: Run to verify pass**
 
 Run: `AWS_DEFAULT_REGION=us-east-1 python -m pytest test/lambda -q -p no:cacheprovider`
-Expected: `66 passed`
+Expected: `72 passed`
 
 - [ ] **Step 5: Commit (user)**
 
@@ -1549,7 +1551,7 @@ with:
 - [ ] **Step 4: Run to verify pass**
 
 Run: `AWS_DEFAULT_REGION=us-east-1 python -m pytest test/lambda -q -p no:cacheprovider`
-Expected: `70 passed`
+Expected: `76 passed`
 
 - [ ] **Step 5: Commit (user)**
 
@@ -1995,7 +1997,7 @@ if __name__ == '__main__':
 - [ ] **Step 5: Run all Python tests**
 
 Run: `AWS_DEFAULT_REGION=us-east-1 python -m pytest test/lambda -q -p no:cacheprovider`
-Expected: `73 passed`
+Expected: `79 passed`
 Run: `python scripts/delete_document_vectors.py --help`
 Expected: usage text printed, exit 0
 
