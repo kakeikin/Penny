@@ -77,7 +77,7 @@ Detail ──► GET /api/entries/{id}/evidence ──► QueryLambda
 - IndexLambda (Python), S3 notification on `text/` prefix only.
 - SQS DLQ for IndexLambda async failures.
 - New API route `GET /api/entries/{id}/evidence` on QueryLambda.
-- Least-privilege IAM: IndexLambda gets `s3vectors:PutVectors`, `s3vectors:DeleteVectors`, read on `text/`, write on `manifests/`, `bedrock:InvokeModel` on the Titan embedding model only, `dynamodb:UpdateItem` on entries. AdvisorLambda gets `s3vectors:QueryVectors` and Titan invoke.
+- Least-privilege IAM: IndexLambda gets `s3vectors:PutVectors`, `s3vectors:DeleteVectors`, read on `text/`, write on `manifests/`, `bedrock:InvokeModel` on the Titan embedding model only, `dynamodb:UpdateItem` on entries. AdvisorLambda gets `s3vectors:QueryVectors` + `s3vectors:GetVectors` (required by S3 Vectors whenever a query uses a metadata filter or returns metadata) and Titan invoke.
 
 ---
 
@@ -85,6 +85,13 @@ Detail ──► GET /api/entries/{id}/evidence ──► QueryLambda
 
 ### docId
 `docId` = the existing `fileHash` (MD5 of the uploaded file). Same file → same ID, consistent with existing duplicate detection. All entries parsed from the same uploaded file already share the same `fileHash`, so they share the same `docId`.
+
+### Demo-session isolation
+Penny already isolates demo visitors: demo uploads land under `uploads/demo-{sid}/`, their entries carry `sessionId`, and QueryLambda filters by the `X-Session-Id` header (owner data has no `sessionId`). RAG must preserve this:
+- `text/{docId}.json` records `sessionId` (null for owner).
+- Every vector carries filterable metadata `sessionId` = the demo sid, or the literal `"owner"`.
+- `search_documents` always filters on the caller's `sessionId`; there is no unfiltered query path.
+- The evidence API returns 404 when the entry's `sessionId` does not match the caller's.
 
 ### Money representation
 - DynamoDB already stores line amounts as decimal strings (`str(amount)` in ParseLambda/ConfirmLambda). This stays.
@@ -139,7 +146,7 @@ The entries table already has a `source` field (upload vs. manual), so the new f
 ### S3 Vectors record
 - **key:** `{docId}#p{page}#c{n}` — deterministic, so re-indexing overwrites instead of duplicating (idempotent).
 - **vector:** Titan Text Embeddings V2, 512 dimensions. Chosen over 1024 because storage and query cost scale with dimension; the eval includes a 512 vs 1024 ablation to justify this.
-- **filterable metadata:** `docId`, `docType`, `yearMonth`.
+- **filterable metadata:** `docId`, `docType`, `yearMonth`, `sessionId`.
 - **non-filterable metadata:** `text`, `page`, `fileKey`, `fileName` — so query results return source text without a second S3 read.
 
 ---
@@ -182,7 +189,7 @@ Rationale: a single statement can span two months, so a document-level period ca
 For each `entries[]` item in the text file, find the first chunk on the same page whose normalized, masked text contains the normalized (already masked) `evidenceText`, then `UpdateItem` that entry's `evidence[i].chunkKey`. No match → leave null and log.
 
 ### Vector deletion
-Penny has no user-facing document deletion today, so v1 provides `delete_document_vectors(docId)` used by `scripts/backfill_index.py --reindex` and a cleanup script; a future delete-document feature calls the same function. It reads `manifests/{docId}.json` and calls `DeleteVectors` with the exact keys in batches. If the manifest is missing, it falls back to listing the index and deleting keys whose `docId` metadata matches. It deletes the manifest afterwards. Re-indexing with a new `chunkerVersion` deletes the old manifest's keys first, so stale chunks never linger.
+Penny has no user-facing document deletion today, so v1 provides `delete_document_vectors(docId)` (in `penny_common.vectors`), used by `scripts/delete_document_vectors.py`; a future delete-document feature calls the same function. Re-indexing (`scripts/backfill_index.py --force`) needs no explicit delete: IndexLambda diffs the new keys against the old manifest and deletes stale keys. It reads `manifests/{docId}.json` and calls `DeleteVectors` with the exact keys in batches. If the manifest is missing, it falls back to listing the index and deleting keys whose `docId` metadata matches. It deletes the manifest afterwards. Re-indexing with a new `chunkerVersion` deletes the old manifest's keys first, so stale chunks never linger.
 
 ### Backfill script
 `scripts/backfill_index.py` regenerates `text/{docId}.json` for existing uploads. PDFs use pypdf only (no Claude cost). Image receipts require Claude transcription and are skipped unless `--include-images` is passed.
@@ -339,15 +346,18 @@ New GitHub Actions workflow: pytest (Lambda tests), jest (CDK tests), `cdk synth
 
 ## 11. Assumptions to Verify During Planning
 
-These do not change the design but must be confirmed before implementation:
-1. S3 Vectors CloudFormation/CDK L1 resource names and availability in `us-east-1`.
-2. The Lambda Python runtime's bundled boto3 supports the `s3vectors` client; if not, ship a newer boto3 in the existing layer.
-3. `DeleteVectors` batch size limit and `QueryVectors` metadata filter syntax.
+Verified 2026-10-01:
+1. ✅ CDK L1 `aws_s3vectors.CfnVectorBucket` / `CfnIndex` exist in aws-cdk-lib 2.248 (`dataType`, `dimension`, `distanceMetric`, `metadataConfiguration.nonFilterableMetadataKeys`, `attrIndexArn`).
+2. ✅ Decision: pin boto3 1.43.x in the layer rather than rely on the runtime's bundled version. The layer is built in the AWS SAM Python 3.12 Docker image, because the current locally built layer contains macOS binaries and `http_ece` has no Linux wheel.
+3. ✅ `PutVectors`/`DeleteVectors`: max 500 per call. `ListVectors` has no prefix/metadata filter. Filter syntax is Mongo-style (`{"$and": [{"sessionId": "owner"}, {"yearMonth": "2026-03"}]}`). Filterable metadata ≤ 2 KB, total ≤ 40 KB, ≤ 10 non-filterable keys per index.
+
+Still to verify:
 4. Current prices for Titan Text Embeddings V2, S3 Vectors, Sonnet 4.6, and Haiku 4.5 (for the cost table and `estCostUsd`).
 5. Titan V2 supports 512-dimension output via request parameter.
 
 ## 12. Known Limitations (v1)
-- Single-user: no auth or per-user isolation; vector metadata has no `userId`. The API is public and S3 CORS allows `*`.
+- Single owner plus anonymous demo sessions: no auth; isolation is by the unauthenticated `X-Session-Id` header, which a caller can spoof. The API is public and S3 CORS allows `*`.
+- The CloudFront default behavior serves the whole app bucket via OAC, so `uploads/`, `text/`, and `manifests/` objects are reachable by anyone who knows the key. Keys contain UUIDs or MD5 hashes and are not enumerable, but moving the frontend to its own prefix/bucket is a recommended follow-up.
 - **Deployment constraint:** because there is no auth, the public deployment (CloudFront live demo) must only contain synthetic data. Real financial documents must never be uploaded to it. Presigned evidence URLs expire after 5 minutes.
 - Evidence for image receipts and scanned PDF pages is not independently validated.
 - Citation validator checks presence, not correctness, of citations.
