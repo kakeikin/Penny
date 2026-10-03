@@ -7,6 +7,7 @@ from penny_common.chunking import (MAX_CHARS, MAX_SINGLE_CHUNK, chunk_document, 
                                    detect_day_first, infer_year_month, vector_key)
 from penny_common.masking import mask_identifiers
 from penny_common.pdftext import SCANNED_MIN_CHARS, PdfTextError, extract_pdf_pages
+from penny_common.textdoc import display_name, build_text_doc, text_doc_key
 from penny_common.textnorm import normalize, contains_normalized
 from pdf_fixtures import make_pdf
 
@@ -246,3 +247,22 @@ def test_chunk_document_long_receipt_is_chunked():
     recs = chunk_document(doc)
     assert len(recs) > 1 and all(len(r['text']) <= MAX_CHARS + 100 for r in recs)
     assert recs[0]['key'] == 'r2#p1#c0' and recs[0]['text'].startswith('[r.jpg | p1 | 2026-04]\n')
+
+
+def test_display_name_strips_uuid_and_demo_prefix():
+    assert display_name('uploads/123e4567-e89b-12d3-a456-426614174000-bank-mar.pdf') == 'bank-mar.pdf'
+    assert display_name('uploads/demo-abc/123e4567-e89b-12d3-a456-426614174000-r.jpg') == 'r.jpg'
+    assert display_name('uploads/plain.pdf') == 'plain.pdf'
+    assert display_name('uploads/q1-2026-bank-of-america-stmt.pdf') == 'q1-2026-bank-of-america-stmt.pdf'
+    assert display_name('uploads/demo-a1-b2/123e4567-e89b-12d3-a456-426614174000-r.jpg') == 'r.jpg'
+    assert display_name('uploads/123e4567-e89b-12d3-a456-426614174000-bank+mar.pdf') == 'bank+mar.pdf'  # no decoding here
+
+
+def test_build_text_doc_shape():
+    doc = build_text_doc('h1', 'uploads/123e4567-e89b-12d3-a456-426614174000-a.pdf', 'bank_statement',
+                         [{'page': 1, 'text': 't', 'extractor': 'pypdf'}], [], None, '2026-03-01T00:00:00Z')
+    assert text_doc_key('h1') == 'text/h1.json'
+    assert doc == {'docId': 'h1', 'fileKey': 'uploads/123e4567-e89b-12d3-a456-426614174000-a.pdf',
+                   'fileName': 'a.pdf', 'docType': 'bank_statement', 'uploadedAt': '2026-03-01T00:00:00Z',
+                   'statementPeriod': None, 'sessionId': None,
+                   'pages': [{'page': 1, 'text': 't', 'extractor': 'pypdf'}], 'entries': []}

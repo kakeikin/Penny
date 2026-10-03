@@ -13,7 +13,7 @@
 **Spec:** `docs/superpowers/specs/2026-10-01-penny-rag-evidence-design.md`
 **Later plans:** Plan 2 — Advisor agent (Converse tool use, `search_documents`, citation validator). Plan 3 — Frontend evidence UI, eval harness, README.
 
-**Pre-verified:** All code in this plan was run in a scratch copy of the repo before writing. Expected results: 87 pytest tests passing (20 existing + 67 new), 14 jest tests passing, and the layer building in Docker with Linux `.so` files.
+**Pre-verified:** All code in this plan was run in a scratch copy of the repo before writing. Expected results: 90 pytest tests passing (20 existing + 70 new), 14 jest tests passing, and the layer building in Docker with Linux `.so` files.
 
 ---
 
@@ -653,6 +653,29 @@ git commit -m "feat: add structure-aware chunker with per-chunk yearMonth"
 
 ### Task 6: `penny_common.textdoc` and `penny_common.vectors`
 
+> **As implemented (post-review):**
+>
+> **What changed in this task**
+> - `display_name` strips the upload prefix only when it is a real UUID (matched by regex), so `q1-2026-bank-of-america-stmt.pdf` is no longer truncated. It never URL-decodes.
+> - `vectors.py` documents that the manifest is the source of truth.
+> - New helper `manifest_keys()` tolerates a missing `keys` field.
+> - `read_manifest` treats only `NoSuchKey` as "missing" and re-raises `AccessDenied`. **IndexLambda therefore needs `s3:ListBucket`.**
+> - The fallback full scan logs a `manifest_missing_full_scan` warning.
+>
+> **Test counts**
+> - 7 vector tests and 3 more `display_name` assertions, so every later expected count is 3 higher again.
+>
+> **Consequences for later tasks**
+> - **Task 9:** IndexLambda must write the manifest *ahead* of the write. The order is:
+>   1. `old = read_manifest`
+>   2. `write_manifest(old ∪ new)`
+>   3. `put_vectors`
+>   4. delete `old − new`
+>   5. `write_manifest(new)`
+>
+>   This way a crash or exhausted retries can never leave vectors that the manifest doesn't list.
+> - **Task 8:** ParseLambda must `unquote_plus` the S3 event key. This is a pre-existing bug: uploads with spaces in the name fail `get_object`.
+
 **Files:**
 - Create: `lambda/common/penny_common/textdoc.py`, `lambda/common/penny_common/vectors.py`
 - Test: `test/lambda/test_penny_common.py` (append), `test/lambda/test_penny_vectors.py`
@@ -846,7 +869,7 @@ def delete_document_vectors(s3, s3vectors, bucket: str, vector_bucket: str, inde
 - [ ] **Step 6: Run to verify pass**
 
 Run: `python -m pytest test/lambda/test_penny_common.py test/lambda/test_penny_vectors.py -q`
-Expected: `45 passed`
+Expected: `48 passed`
 
 - [ ] **Step 7: Commit (user)**
 
@@ -1194,7 +1217,7 @@ After the inner `for i, line in enumerate(entry['lines']):` loop (at function in
 - [ ] **Step 10: Run all tests**
 
 Run: `AWS_DEFAULT_REGION=us-east-1 python -m pytest test/lambda -q -p no:cacheprovider`
-Expected: `75 passed`
+Expected: `78 passed`
 
 - [ ] **Step 11: Commit (user)**
 
@@ -1419,7 +1442,7 @@ def handler(event, context):
 - [ ] **Step 4: Run to verify pass**
 
 Run: `AWS_DEFAULT_REGION=us-east-1 python -m pytest test/lambda -q -p no:cacheprovider`
-Expected: `80 passed`
+Expected: `83 passed`
 
 - [ ] **Step 5: Commit (user)**
 
@@ -1560,7 +1583,7 @@ with:
 - [ ] **Step 4: Run to verify pass**
 
 Run: `AWS_DEFAULT_REGION=us-east-1 python -m pytest test/lambda -q -p no:cacheprovider`
-Expected: `84 passed`
+Expected: `87 passed`
 
 - [ ] **Step 5: Commit (user)**
 
@@ -2006,7 +2029,7 @@ if __name__ == '__main__':
 - [ ] **Step 5: Run all Python tests**
 
 Run: `AWS_DEFAULT_REGION=us-east-1 python -m pytest test/lambda -q -p no:cacheprovider`
-Expected: `87 passed`
+Expected: `90 passed`
 Run: `python scripts/delete_document_vectors.py --help`
 Expected: usage text printed, exit 0
 
