@@ -13,7 +13,7 @@
 **Spec:** `docs/superpowers/specs/2026-10-01-penny-rag-evidence-design.md`
 **Later plans:** Plan 2 — Advisor agent (Converse tool use, `search_documents`, citation validator). Plan 3 — Frontend evidence UI, eval harness, README.
 
-**Pre-verified:** All code in this plan was run in a scratch copy of the repo before writing. Expected results: 79 pytest tests passing (20 existing + 59 new), 14 jest tests passing, and the layer building in Docker with Linux `.so` files.
+**Pre-verified:** All code in this plan was run in a scratch copy of the repo before writing. Expected results: 87 pytest tests passing (20 existing + 67 new), 14 jest tests passing, and the layer building in Docker with Linux `.so` files.
 
 ---
 
@@ -446,6 +446,15 @@ git commit -m "feat: add per-page PDF text extraction with scanned-page detectio
 
 ### Task 5: `penny_common.chunking` — structure-aware chunks, yearMonth, keys
 
+> **As implemented (post-review):**
+> - **Transaction dates:** a transaction date must be a line-leading, two-digit `NN/NN[/YY[YY]]` that forms a real calendar date, so footers like "Page 1/3" don't count.
+> - **Date window:** full dates count only within 400 days before or 31 days after the reference date.
+> - **Malformed input:** a malformed `statementPeriod.end` or `uploadedAt` falls back instead of crashing.
+> - **DD/MM statements:** `detect_day_first()` switches a page to DD/MM if any line-leading date has a first field greater than 12.
+> - **Long lines:** a line longer than `MAX_CHARS` is wrapped at whitespace.
+> - **Receipts:** a receipt page longer than `MAX_SINGLE_CHUNK` (8000 chars) is chunked like a statement.
+> - **Test counts:** 8 more tests, so `test_penny_common.py` has 39 after this task and every later expected count is 8 higher again.
+
 **Files:**
 - Create: `lambda/common/penny_common/chunking.py`
 - Test: `test/lambda/test_penny_common.py` (append)
@@ -837,7 +846,7 @@ def delete_document_vectors(s3, s3vectors, bucket: str, vector_bucket: str, inde
 - [ ] **Step 6: Run to verify pass**
 
 Run: `python -m pytest test/lambda/test_penny_common.py test/lambda/test_penny_vectors.py -q`
-Expected: `37 passed`
+Expected: `45 passed`
 
 - [ ] **Step 7: Commit (user)**
 
@@ -1185,7 +1194,7 @@ After the inner `for i, line in enumerate(entry['lines']):` loop (at function in
 - [ ] **Step 10: Run all tests**
 
 Run: `AWS_DEFAULT_REGION=us-east-1 python -m pytest test/lambda -q -p no:cacheprovider`
-Expected: `67 passed`
+Expected: `75 passed`
 
 - [ ] **Step 11: Commit (user)**
 
@@ -1410,7 +1419,7 @@ def handler(event, context):
 - [ ] **Step 4: Run to verify pass**
 
 Run: `AWS_DEFAULT_REGION=us-east-1 python -m pytest test/lambda -q -p no:cacheprovider`
-Expected: `72 passed`
+Expected: `80 passed`
 
 - [ ] **Step 5: Commit (user)**
 
@@ -1551,7 +1560,7 @@ with:
 - [ ] **Step 4: Run to verify pass**
 
 Run: `AWS_DEFAULT_REGION=us-east-1 python -m pytest test/lambda -q -p no:cacheprovider`
-Expected: `76 passed`
+Expected: `84 passed`
 
 - [ ] **Step 5: Commit (user)**
 
@@ -1997,7 +2006,7 @@ if __name__ == '__main__':
 - [ ] **Step 5: Run all Python tests**
 
 Run: `AWS_DEFAULT_REGION=us-east-1 python -m pytest test/lambda -q -p no:cacheprovider`
-Expected: `79 passed`
+Expected: `87 passed`
 Run: `python scripts/delete_document_vectors.py --help`
 Expected: usage text printed, exit 0
 

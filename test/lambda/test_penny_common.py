@@ -3,6 +3,8 @@ import io
 import pytest
 from pypdf import PageObject, PdfReader, PdfWriter
 
+from penny_common.chunking import (MAX_CHARS, MAX_SINGLE_CHUNK, chunk_document, chunk_page,
+                                   detect_day_first, infer_year_month, vector_key)
 from penny_common.masking import mask_identifiers
 from penny_common.pdftext import SCANNED_MIN_CHARS, PdfTextError, extract_pdf_pages
 from penny_common.textnorm import normalize, contains_normalized
@@ -112,3 +114,135 @@ def test_extract_pdf_pages_password_protected_raises_encrypted():
     with pytest.raises(PdfTextError) as exc:
         extract_pdf_pages(buf.getvalue())
     assert exc.value.reason == 'encrypted'
+
+
+def test_chunk_page_short_drops_blank_lines():
+    assert chunk_page('a\n\nb\n') == ['a\nb']
+
+
+def test_chunk_page_overlap_and_line_integrity():
+    lines = [f'{i:02d} ' + 'x' * 96 for i in range(30)]
+    chunks = chunk_page('\n'.join(lines), max_chars=1000, overlap=2)
+    assert len(chunks) > 1
+    for c in chunks:
+        assert len(c) <= 1000
+        for line in c.split('\n'):
+            assert line in lines          # a transaction line is never split
+    for a, b in zip(chunks, chunks[1:]):
+        assert a.split('\n')[-2:] == b.split('\n')[:2]   # 2-line overlap
+    assert set(l for c in chunks for l in c.split('\n')) == set(lines)
+
+
+def test_chunk_page_huge_lines_do_not_duplicate_via_overlap():
+    lines = ['a' * 600, 'b' * 600, 'c' * 600]
+    assert chunk_page('\n'.join(lines), max_chars=1000, overlap=2) == lines
+
+
+def test_chunk_page_deterministic():
+    t = '\n'.join(f'line {i}' for i in range(500))
+    assert chunk_page(t) == chunk_page(t)
+
+
+PERIOD = {'start': '2026-03-15', 'end': '2026-04-14'}
+
+
+def test_year_month_majority_of_transaction_dates():
+    assert infer_year_month('03/16 A\n03/20 B\n04/01 C', PERIOD, '2026-04-20T00:00:00Z') == '2026-03'
+
+
+def test_year_month_tie_picks_earliest():
+    assert infer_year_month('03/30 A\n04/02 B', PERIOD, '2026-04-20T00:00:00Z') == '2026-03'
+
+
+def test_year_month_infers_year_across_december():
+    period = {'start': '2025-12-15', 'end': '2026-01-14'}
+    assert infer_year_month('12/20 X\n12/22 Y', period, '2026-01-20T00:00:00Z') == '2025-12'
+
+
+def test_year_month_iso_and_full_us_dates():
+    assert infer_year_month('2026-05-01 coffee', None, '2026-06-01T00:00:00Z') == '2026-05'
+    assert infer_year_month('07/04/2025 fireworks', None, '2026-06-01T00:00:00Z') == '2025-07'
+
+
+def test_year_month_falls_back_to_statement_period_end():
+    assert infer_year_month('Summary page, totals only', PERIOD, '2026-04-20T00:00:00Z') == '2026-04'
+
+
+def test_year_month_falls_back_to_upload_month():
+    assert infer_year_month('no dates', None, '2026-03-02T10:00:00Z') == '2026-03'
+
+
+def test_year_month_ignores_amounts():
+    assert infer_year_month('Total 1,234.56 balance 120.00', None, '2026-03-02T10:00:00Z') == '2026-03'
+
+
+def test_chunk_document_header_mask_and_key():
+    doc = {'docId': 'abc', 'docType': 'bank_statement', 'fileName': 'mar.pdf',
+           'uploadedAt': '2026-04-20T00:00:00Z', 'statementPeriod': PERIOD,
+           'pages': [{'page': 1, 'text': 'Acct 1234567890\n03/16 A -1.00', 'extractor': 'pypdf'},
+                     {'page': 2, 'text': '', 'extractor': 'claude'}]}
+    recs = chunk_document(doc)
+    assert len(recs) == 1                       # empty page produces no chunk
+    r = recs[0]
+    assert r['key'] == vector_key('abc', 1, 0) == 'abc#p1#c0'
+    assert r['yearMonth'] == '2026-03'
+    assert r['text'].startswith('[mar.pdf | p1 | 2026-03]\n')
+    assert '****7890' in r['text'] and '1234567890' not in r['text']
+
+
+def test_chunk_document_receipt_is_one_chunk():
+    doc = {'docId': 'r1', 'docType': 'receipt', 'fileName': 'r.jpg', 'uploadedAt': '2026-04-20T00:00:00Z',
+           'statementPeriod': None, 'pages': [{'page': 1, 'text': '\n'.join(['item'] * 1000), 'extractor': 'claude'}]}
+    assert len(chunk_document(doc)) == 1
+
+
+def test_year_month_ignores_page_footers_and_fractions():
+    up = '2026-04-20T00:00:00Z'
+    assert infer_year_month('1/2 off\n03/16 A', PERIOD, up) == '2026-03'
+    assert infer_year_month('Page 1/3', PERIOD, up) == '2026-04'          # falls back to period end
+    assert infer_year_month('Card Exp 10/28', None, up) == '2026-04'       # not at line start
+    assert infer_year_month('02/31 invalid day', None, up) == '2026-04'    # not a real date
+
+
+def test_year_month_two_digit_year():
+    assert infer_year_month('03/15/26 coffee', None, '2026-04-20T00:00:00Z') == '2026-03'
+
+
+def test_year_month_ignores_implausible_full_dates():
+    up = '2026-04-20T00:00:00Z'
+    assert infer_year_month('Member since 2019-05-01\n12/31/1999 old', None, up) == '2026-04'
+    assert infer_year_month('01/02/2027 future', None, up) == '2026-04'
+
+
+def test_year_month_survives_malformed_period_and_upload():
+    for period in ({'end': '2026-04'}, {'end': '2026/04/14'}, {'end': 'April 2026'}):
+        assert infer_year_month('no dates', period, '2026-03-02T10:00:00Z') == '2026-03'
+    assert len(infer_year_month('no dates', None, '')) == 7      # falls back to today
+
+
+def test_day_first_detection_and_inference():
+    uk = '01/03 Tesco\n05/03 Boots\n14/03 Pret'
+    assert detect_day_first(uk) is True
+    assert detect_day_first('03/01 A\n03/05 B') is False
+    assert infer_year_month(uk, None, '2026-03-31T00:00:00Z', day_first=True) == '2026-03'
+
+
+def test_chunk_document_applies_day_first_per_page():
+    doc = {'docId': 'uk', 'docType': 'bank_statement', 'fileName': 'uk.pdf', 'uploadedAt': '2026-03-31T00:00:00Z',
+           'statementPeriod': None, 'pages': [{'page': 1, 'text': '01/03 Tesco\n05/03 Boots\n14/03 Pret',
+                                               'extractor': 'pypdf'}]}
+    assert chunk_document(doc)[0]['yearMonth'] == '2026-03'
+
+
+def test_chunk_page_wraps_a_single_oversized_line():
+    chunks = chunk_page('word ' * 2000)          # ~10k chars, no newlines
+    assert len(chunks) > 1 and all(len(c) <= MAX_CHARS for c in chunks)
+
+
+def test_chunk_document_long_receipt_is_chunked():
+    doc = {'docId': 'r2', 'docType': 'receipt', 'fileName': 'r.jpg', 'uploadedAt': '2026-04-20T00:00:00Z',
+           'statementPeriod': None,
+           'pages': [{'page': 1, 'text': '\n'.join(['item 1.00'] * (MAX_SINGLE_CHUNK // 5)), 'extractor': 'claude'}]}
+    recs = chunk_document(doc)
+    assert len(recs) > 1 and all(len(r['text']) <= MAX_CHARS + 100 for r in recs)
+    assert recs[0]['key'] == 'r2#p1#c0' and recs[0]['text'].startswith('[r.jpg | p1 | 2026-04]\n')

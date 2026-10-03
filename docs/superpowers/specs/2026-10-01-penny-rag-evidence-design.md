@@ -165,13 +165,13 @@ The entries table already has a `source` field (upload vs. manual), so the new f
 
 ### Chunking (IndexLambda)
 Structure-aware, not fixed-size:
-- **Receipts:** one chunk per receipt.
-- **Bank statements:** per page, split on line boundaries into ~500-token chunks with a 2-line overlap. A transaction line is never split across chunks.
+- **Receipts:** one chunk per page (keeps `page` meaningful for citations); a page longer than ~8000 chars is chunked like a statement so no chunk exceeds the embedding input limit.
+- **Bank statements:** per page, split on line boundaries into ~500-token chunks with a 2-line overlap. A transaction line is never split across chunks. A single line longer than the chunk budget (pypdf sometimes returns a page without newlines) is wrapped at whitespace.
 - **Context header:** each chunk is prefixed with `[<fileName> | p<page> | <yearMonth>]` so numeric-only chunks remain retrievable.
 - Chunker output is deterministic given the same input and `chunkerVersion`.
 
 ### yearMonth per chunk (priority order)
-1. Majority month among transaction dates found in the chunk (ties → earliest month).
+1. Majority month among transaction dates found in the chunk (ties → earliest month). A transaction date is a line-leading two-digit `NN/NN[/YY[YY]]` that forms a real calendar date, or a full ISO date anywhere. Full dates count only within 400 days before / 31 days after the reference date. A page is parsed as DD/MM when any line-leading date has a first field > 12 (UK/EU statements).
 2. End month of `statementPeriod` (for chunks without transaction lines, e.g. a summary page).
 3. Month of `uploadedAt`.
 
@@ -361,5 +361,6 @@ Still to verify:
 - **Deployment constraint:** because there is no auth, the public deployment (CloudFront live demo) must only contain synthetic data. Real financial documents must never be uploaded to it. Presigned evidence URLs expire after 5 minutes.
 - Evidence for image receipts and scanned PDF pages is not independently validated.
 - Citation validator checks presence, not correctness, of citations.
+- yearMonth parsing does not understand textual months (`Mar 16`), CJK dates (`2026年3月14日`), or `YYYY/MM/DD`; such chunks use the statement-period or upload-month fallback. An all-ambiguous DD/MM page (every day ≤ 12) is read as MM/DD. Single-digit `M/D` dates and dates that don't start a line (`Posted 03/16`) are ignored on purpose, so footers like `Page 1/3` aren't misread.
 - Masking misses identifiers printed with internal spaces or dashes (`4111 1111 1111 1111`); compact `YYYYMMDD` dates are masked as identifiers by design.
 - Masking is context-dependent (an 8-digit run followed by `.90` is treated as an amount), so in rare cases masked evidence text and masked chunk text differ and the chunkKey backfill leaves `chunkKey` null. This fails safe.
