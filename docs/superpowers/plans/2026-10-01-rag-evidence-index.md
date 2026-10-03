@@ -13,7 +13,7 @@
 **Spec:** `docs/superpowers/specs/2026-10-01-penny-rag-evidence-design.md`
 **Later plans:** Plan 2 — Advisor agent (Converse tool use, `search_documents`, citation validator). Plan 3 — Frontend evidence UI, eval harness, README.
 
-**Pre-verified:** All code in this plan was run in a scratch copy of the repo before writing. Expected results: 149 pytest tests passing (20 existing + 129 new), 14 jest tests passing, and the layer building in Docker with Linux `.so` files.
+**Pre-verified:** All code in this plan was run in a scratch copy of the repo before writing. Expected results: 161 pytest tests passing (20 existing + 141 new), 14 jest tests passing, and the layer building in Docker with Linux `.so` files.
 
 ---
 
@@ -1493,6 +1493,13 @@ git commit -m "feat: add IndexLambda to embed documents into S3 Vectors"
 
 ### Task 10: Evidence API
 
+> **As implemented (post-review):** the final files are in the repo.
+> - **Matching:** evidence is matched with `doc_id_for(fileHash, sessionId)`. The docId must not be None.
+> - **Presigned URLs:** only for `.pdf/.jpg/.jpeg/.png`, with `ResponseContentType` set by extension and `ResponseContentDisposition: inline`, TTL 300s.
+> - **Response:** fields come from an allowlist (`docId, sourceType, text, chunkKey, page, fileUrl`). Malformed items are skipped and logged.
+> - **Errors:** an empty id returns 404. A DynamoDB `ClientError` returns 500 with CORS headers.
+> - **Tests:** 16, including a demo session reading an owner entry (404), an empty session header treated as owner, and a demo entry carrying the owner docId (no URL).
+
 **Files:**
 - Modify: `lambda/query/index.py` (constants after line 15; new function before `handler`; route at the top of `handler`)
 - Test: `test/lambda/test_query_evidence.py`
@@ -1621,7 +1628,7 @@ with:
 - [ ] **Step 4: Run to verify pass**
 
 Run: `AWS_DEFAULT_REGION=us-east-1 python -m pytest test/lambda -q -p no:cacheprovider`
-Expected: `146 passed`
+Expected: `158 passed`
 
 - [ ] **Step 5: Commit (user)**
 
@@ -2067,7 +2074,7 @@ if __name__ == '__main__':
 - [ ] **Step 5: Run all Python tests**
 
 Run: `AWS_DEFAULT_REGION=us-east-1 python -m pytest test/lambda -q -p no:cacheprovider`
-Expected: `149 passed`
+Expected: `161 passed`
 Run: `python scripts/delete_document_vectors.py --help`
 Expected: usage text printed, exit 0
 
