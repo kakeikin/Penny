@@ -5,6 +5,7 @@ const app = new cdk.App();
 new FinanceStack(app, 'FinanceStack', {
   env: {
     account: process.env.CDK_DEFAULT_ACCOUNT,
-    region: process.env.CDK_DEFAULT_REGION ?? 'us-east-1',
+    // Pinned: Lambda code creates bedrock/s3vectors clients in us-east-1, and IAM grants are region-scoped.
+    region: 'us-east-1',
   },
 });

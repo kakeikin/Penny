@@ -7,7 +7,8 @@ import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as apigw from 'aws-cdk-lib/aws-apigateway';
 import * as cloudfront from 'aws-cdk-lib/aws-cloudfront';
 import * as origins from 'aws-cdk-lib/aws-cloudfront-origins';
-import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
+import * as s3vectors from 'aws-cdk-lib/aws-s3vectors';
+import * as sqs from 'aws-cdk-lib/aws-sqs';
 import * as sns from 'aws-cdk-lib/aws-sns';
 import * as snsSubscriptions from 'aws-cdk-lib/aws-sns-subscriptions';
 import * as events from 'aws-cdk-lib/aws-events';
@@ -18,12 +19,6 @@ import * as path from 'path';
 export class FinanceStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
-
-    // ── Secrets ──────────────────────────────────────────────
-    const claudeSecret = new secretsmanager.Secret(this, 'ClaudeApiKey', {
-      secretName: 'finance/claude-api-key',
-      description: 'Anthropic Claude API key for finance app',
-    });
 
     // ── DynamoDB Tables ───────────────────────────────────────
     const accountsTable = new dynamodb.Table(this, 'AccountsTable', {
@@ -124,7 +119,9 @@ export class FinanceStack extends cdk.Stack {
       code: lambda.Code.fromAsset(path.join(__dirname, '../lambda/parse')),
       layers: [pyLayer],
       environment: lambdaEnv,
-      timeout: cdk.Duration.seconds(60),
+      // Bedrock read_timeout is 270s; 600s leaves room for the no-transcript retry after truncation.
+      timeout: cdk.Duration.seconds(600),
+      retryAttempts: 1,   // one bad file must not burn ~30 min of Lambda time across async retries
       memorySize: 512,
     });
 
@@ -197,6 +194,67 @@ export class FinanceStack extends cdk.Stack {
       { prefix: 'uploads/' },
     );
 
+    // ── RAG: vector store + IndexLambda ───────────────────────
+    // Every CfnIndex property forces replacement, and CloudFormation creates the replacement
+    // before deleting the old one -- so a fixed name would collide. To change dimension or
+    // metadata config: bump the suffix (-v2) and run scripts/backfill_index.py --force.
+    const VECTOR_INDEX_NAME = 'penny-docs-v1';
+    const EMBED_MODEL_ARN = `arn:aws:bedrock:${cdk.Aws.REGION}::foundation-model/amazon.titan-embed-text-v2:0`;
+
+    // Vectors are derived data (rebuildable from text/ in the retained AppBucket), so the
+    // default DELETE removal policy is deliberate: RETAIN + fixed names would block redeploys.
+    const vectorBucket = new s3vectors.CfnVectorBucket(this, 'VectorBucket', {
+      vectorBucketName: `penny-vectors-${cdk.Aws.ACCOUNT_ID}`,
+    });
+    const vectorIndex = new s3vectors.CfnIndex(this, 'DocsVectorIndex', {
+      vectorBucketArn: vectorBucket.attrVectorBucketArn,
+      indexName: VECTOR_INDEX_NAME,
+      dataType: 'float32',
+      dimension: 512,
+      distanceMetric: 'cosine',
+      metadataConfiguration: { nonFilterableMetadataKeys: ['text', 'page', 'fileKey', 'fileName'] },
+    });
+
+    const indexDlq = new sqs.Queue(this, 'IndexDlq', { retentionPeriod: cdk.Duration.days(14) });
+    const indexFn = new lambda.Function(this, 'IndexLambda', {
+      runtime: lambda.Runtime.PYTHON_3_12,
+      handler: 'index.handler',
+      code: lambda.Code.fromAsset(path.join(__dirname, '../lambda/indexer')),
+      layers: [pyLayer],
+      environment: {
+        ...lambdaEnv,
+        VECTOR_BUCKET: vectorBucket.vectorBucketName!,
+        VECTOR_INDEX: VECTOR_INDEX_NAME,
+      },
+      timeout: cdk.Duration.minutes(5),
+      memorySize: 512,
+      retryAttempts: 2,
+      deadLetterQueue: indexDlq,
+    });
+    indexFn.node.addDependency(vectorIndex);
+
+    appBucket.grantRead(indexFn, 'text/*');
+    // Key-pattern grants still put s3:List* on the bucket ARN; that is required so a missing
+    // manifest returns NoSuchKey rather than AccessDenied, and it cannot be prefix-scoped.
+    appBucket.grantReadWrite(indexFn, 'manifests/*');
+    entriesTable.grant(indexFn, 'dynamodb:UpdateItem');
+    indexFn.addToRolePolicy(new iam.PolicyStatement({
+      // List/GetVectors are only needed by scripts/delete_document_vectors.py (operator creds).
+      actions: ['s3vectors:PutVectors', 's3vectors:DeleteVectors'],
+      resources: [vectorIndex.attrIndexArn],
+    }));
+    indexFn.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['bedrock:InvokeModel'],
+      resources: [EMBED_MODEL_ARN],
+    }));
+
+    // ParseLambda writes text/{docId}.json → IndexLambda. IndexLambda never writes text/.
+    appBucket.addEventNotification(
+      s3.EventType.OBJECT_CREATED,
+      new s3n.LambdaDestination(indexFn),
+      { prefix: 'text/' },
+    );
+
     // ── API Gateway ───────────────────────────────────────────
     const api = new apigw.RestApi(this, 'FinanceApi', {
       restApiName: 'finance-api',
@@ -221,6 +279,8 @@ export class FinanceStack extends cdk.Stack {
     const entryRes = entriesRes.addResource('{id}');
     entryRes.addMethod('PUT', new apigw.LambdaIntegration(manualEntryFn));
     entryRes.addMethod('DELETE', new apigw.LambdaIntegration(manualEntryFn));
+
+    entryRes.addResource('evidence').addMethod('GET', new apigw.LambdaIntegration(queryFn));
 
     const confirmRes = entryRes.addResource('confirm');
     confirmRes.addMethod('PUT', new apigw.LambdaIntegration(confirmFn));
@@ -377,5 +437,7 @@ export class FinanceStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'ApiUrl', { value: api.url });
     new cdk.CfnOutput(this, 'BucketName', { value: appBucket.bucketName });
     new cdk.CfnOutput(this, 'DistributionId', { value: distribution.distributionId });
+    new cdk.CfnOutput(this, 'VectorBucketName', { value: vectorBucket.vectorBucketName! });
+    new cdk.CfnOutput(this, 'IndexDlqUrl', { value: indexDlq.queueUrl });
   }
 }

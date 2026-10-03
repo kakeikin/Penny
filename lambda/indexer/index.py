@@ -18,7 +18,7 @@ dynamodb  = boto3.resource('dynamodb')
 
 APP_BUCKET    = os.environ.get('APP_BUCKET', '')
 VECTOR_BUCKET = os.environ.get('VECTOR_BUCKET', '')
-VECTOR_INDEX  = os.environ.get('VECTOR_INDEX', 'penny-docs')
+VECTOR_INDEX  = os.environ.get('VECTOR_INDEX', 'penny-docs-v1')
 ENTRIES_TABLE = os.environ.get('ENTRIES_TABLE', 'finance-journal-entries')
 
 EMBED_MODEL_ID   = 'amazon.titan-embed-text-v2:0'

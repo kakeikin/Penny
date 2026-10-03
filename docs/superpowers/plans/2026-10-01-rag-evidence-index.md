@@ -13,7 +13,7 @@
 **Spec:** `docs/superpowers/specs/2026-10-01-penny-rag-evidence-design.md`
 **Later plans:** Plan 2 — Advisor agent (Converse tool use, `search_documents`, citation validator). Plan 3 — Frontend evidence UI, eval harness, README.
 
-**Pre-verified:** All code in this plan was run in a scratch copy of the repo before writing. Expected results: 161 pytest tests passing (20 existing + 141 new), 14 jest tests passing, and the layer building in Docker with Linux `.so` files.
+**Pre-verified:** All code in this plan was run in a scratch copy of the repo before writing. Expected results: 161 pytest tests passing (20 existing + 141 new), 16 jest tests passing, and the layer building in Docker with Linux `.so` files.
 
 ---
 
@@ -1641,6 +1641,21 @@ git commit -m "feat: add GET /api/entries/{id}/evidence with presigned source UR
 
 ### Task 11: CDK — vector store, IndexLambda, DLQ, IAM, route; remove unused secret
 
+> **As implemented (post-review, Opus).** Final files are in the repo. Differences from the steps below:
+> - **ParseLambda:** `timeout: 600s` and `retryAttempts: 1`.
+> - **Vector index:** named **`penny-docs-v1`**. Every `CfnIndex` property forces replacement, and a fixed name would collide during the replace. `VECTOR_INDEX` and the indexer's default use the same name.
+> - **IndexLambda IAM:** only `s3vectors:PutVectors` and `DeleteVectors`. List and Get are used only by the operator cleanup script.
+> - **Comments:** the vector store is deliberately left on DELETE (it can be rebuilt), and the comment on ListBucket is corrected.
+> - **`bin/app.ts`:** pins `region: 'us-east-1'`, because the Lambda code hardcodes us-east-1 clients and IAM is scoped by region.
+> - **Jest:** 16 tests. They cover:
+>   - the evidence GET method integrated with QueryLambda
+>   - IndexLambda env vars and the `DependsOn` on the index
+>   - the vector bucket name shape
+>   - no writes or deletes on `text/`
+>   - zero secrets
+>   - ParseLambda async retries = 1
+> - **Follow-ups:** `scripts/delete_document_vectors.py` must default `--index penny-docs-v1`, and Task 14 commands use `penny-docs-v1`. Also revoke any real Anthropic key that `finance/claude-api-key` ever held. Deleting the secret does not revoke it.
+
 **Files:**
 - Modify: `lib/finance-stack.ts`, `test/finance-stack.test.ts`
 
@@ -1812,7 +1827,7 @@ import * as sqs from 'aws-cdk-lib/aws-sqs';
 Run: `npx tsc --noEmit -p .`
 Expected: no output
 Run: `npx jest`
-Expected: `Tests: 14 passed, 14 total`
+Expected: `Tests: 16 passed, 16 total`
 
 - [ ] **Step 10: Commit (user)**
 
@@ -2058,7 +2073,7 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('--bucket', required=True)
     ap.add_argument('--vector-bucket', required=True)
-    ap.add_argument('--index', default='penny-docs')
+    ap.add_argument('--index', default='penny-docs-v1')
     ap.add_argument('--doc-id', required=True)
     args = ap.parse_args(argv)
     n = delete_document_vectors(boto3.client('s3'), boto3.client('s3vectors', region_name='us-east-1'),
@@ -2170,7 +2185,7 @@ Expected: `{"evidence": [{"docId": "...", "page": 1, "text": "...", "chunkKey": 
 
 - [ ] **Step 5b: Confirm DeleteVectors ignores missing keys** (spec §12 assumption)
 
-Run: `aws s3vectors delete-vectors --vector-bucket-name <VectorBucketName> --index-name penny-docs --keys does-not-exist#p1#c0`
+Run: `aws s3vectors delete-vectors --vector-bucket-name <VectorBucketName> --index-name penny-docs-v1 --keys does-not-exist#p1#c0`
 Expected: exit 0 with no error. If it errors, `delete_keys` must filter to existing keys first.
 
 - [ ] **Step 6: Verify the DLQ is empty**

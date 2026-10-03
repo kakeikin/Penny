@@ -48,7 +48,7 @@ Upload ──► S3 uploads/ ──► ParseLambda (existing, modified)
                             IndexLambda (new)
                             ├─ read text/{docId}.json
                             ├─ chunk → mask → embed (Titan Text Embeddings V2, 512 dims)
-                            ├─ PutVectors → S3 Vectors index "penny-docs"
+                            ├─ PutVectors → S3 Vectors index "penny-docs-v1"
                             ├─ write manifests/{docId}.json (all vector keys)
                             └─ backfill evidence[].chunkKey on entries (DynamoDB UpdateItem)
                             failures → 2 async retries → SQS DLQ
@@ -73,7 +73,7 @@ Detail ──► GET /api/entries/{id}/evidence ──► QueryLambda
 - `ClaudeApiKey` secret (`finance/claude-api-key`): defined but read by no Lambda, since Claude is invoked via Bedrock with IAM. Removing it saves ~$0.40/month and removes a misleading resource.
 
 ### New CDK resources
-- S3 Vector bucket + index `penny-docs` (L1 constructs), dimension 512, cosine distance.
+- S3 Vector bucket + index `penny-docs-v1` (L1 constructs), dimension 512, cosine distance. The name is versioned because every index property forces replacement: a schema change means bumping to `-v2` and running the backfill.
 - IndexLambda (Python), S3 notification on `text/` prefix only.
 - SQS DLQ for IndexLambda async failures.
 - New API route `GET /api/entries/{id}/evidence` on QueryLambda.

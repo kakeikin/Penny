@@ -46,7 +46,7 @@ def test_index_document_puts_vectors_writes_manifest_backfills(idx):
     summary = idx.index_document(DOC)
     assert summary['chunks'] == 1 and summary['embedTokens'] == 7
     put = idx.s3vectors.put_vectors.call_args.kwargs
-    assert put['indexName'] == 'penny-docs' and put['vectors'][0]['key'] == 'd1#p1#c0'
+    assert put['indexName'] == 'penny-docs-v1' and put['vectors'][0]['key'] == 'd1#p1#c0'
     idx.s3vectors.delete_vectors.assert_not_called()
     assert json.loads(idx.s3.put_object.call_args.kwargs['Body'])['keys'] == ['d1#p1#c0']
     upd = idx.dynamodb.Table.return_value.update_item
@@ -60,7 +60,7 @@ def test_reindex_deletes_stale_keys(idx):
     _manifest(idx, ['d1#p1#c0', 'd1#p1#c1', 'd1#p2#c0'])
     summary = idx.index_document(DOC)
     idx.s3vectors.delete_vectors.assert_called_once_with(
-        vectorBucketName='vb', indexName='penny-docs', keys=['d1#p1#c1', 'd1#p2#c0'])
+        vectorBucketName='vb', indexName='penny-docs-v1', keys=['d1#p1#c1', 'd1#p2#c0'])
     assert summary['staleDeleted'] == 2
 
 
@@ -201,7 +201,7 @@ def test_empty_document_clears_old_vectors(idx, capsys):
     _manifest(idx, ['d1#p1#c0'])
     summary = idx.index_document({**DOC, 'pages': [{'page': 1, 'text': '', 'extractor': 'claude'}], 'entries': []})
     idx.s3vectors.put_vectors.assert_not_called()
-    idx.s3vectors.delete_vectors.assert_called_once_with(vectorBucketName='vb', indexName='penny-docs', keys=['d1#p1#c0'])
+    idx.s3vectors.delete_vectors.assert_called_once_with(vectorBucketName='vb', indexName='penny-docs-v1', keys=['d1#p1#c0'])
     assert json.loads(idx.s3.put_object.call_args.kwargs['Body'])['keys'] == []
     assert summary['event'] == 'indexed_empty'
 
