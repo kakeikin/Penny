@@ -13,7 +13,7 @@
 **Spec:** `docs/superpowers/specs/2026-10-01-penny-rag-evidence-design.md`
 **Later plans:** Plan 2 — Advisor agent (Converse tool use, `search_documents`, citation validator). Plan 3 — Frontend evidence UI, eval harness, README.
 
-**Pre-verified:** All code in this plan was run in a scratch copy of the repo before writing. Expected results: 136 pytest tests passing (20 existing + 116 new), 14 jest tests passing, and the layer building in Docker with Linux `.so` files.
+**Pre-verified:** All code in this plan was run in a scratch copy of the repo before writing. Expected results: 149 pytest tests passing (20 existing + 129 new), 14 jest tests passing, and the layer building in Docker with Linux `.so` files.
 
 ---
 
@@ -1252,6 +1252,22 @@ git commit -m "feat: capture validated per-entry evidence and write text docs on
 
 ### Task 9: IndexLambda
 
+> **As implemented (post-review, Opus).** Final files are in the repo.
+> - **Write order:** `index_document` first embeds every chunk, so a Bedrock failure never touches the manifest. Then:
+>   1. Write the manifest ahead as old ∪ new (skipped if new ⊆ old).
+>   2. `put_vectors`.
+>   3. Delete stale keys.
+>   4. Re-read the manifest and write `(fresh ∪ new) − stale`.
+>
+>   This merge-on-write keeps the superset guarantee even if another invocation for the same docId runs at the same time.
+> - **chunkKey backfill:** uses `ConditionExpression attribute_exists(evidence[0])` and tolerates `ConditionalCheckFailedException` per entry (the entry was deleted via `DELETE /api/entries/{id}`). Other errors still raise.
+> - **`embed()`:** checks that the embedding has 512 dimensions.
+> - **Handler:** checks that `key == text/{docId}.json` and logs `index_failed` with the key. An empty document logs `indexed_empty`.
+> - **Tests:** 18 in total, including the real `embed()` request contract, write-ahead on crash, the concurrent-merge case, and the deleted-entry case.
+> - **Consequences for later tasks:**
+>   - Task 12's backfill must **skip a PDF whose pages are all scanned** (`extractor == 'claude'`), because pypdf-only backfill would otherwise replace vectors built from Claude transcripts with an empty document.
+>   - Task 14 must confirm that `DeleteVectors` ignores missing keys.
+
 **Files:**
 - Create: `lambda/indexer/index.py`
 - Test: `test/lambda/test_indexer.py`
@@ -1464,7 +1480,7 @@ def handler(event, context):
 - [ ] **Step 4: Run to verify pass**
 
 Run: `AWS_DEFAULT_REGION=us-east-1 python -m pytest test/lambda -q -p no:cacheprovider`
-Expected: `129 passed`
+Expected: `142 passed`
 
 - [ ] **Step 5: Commit (user)**
 
@@ -1605,7 +1621,7 @@ with:
 - [ ] **Step 4: Run to verify pass**
 
 Run: `AWS_DEFAULT_REGION=us-east-1 python -m pytest test/lambda -q -p no:cacheprovider`
-Expected: `133 passed`
+Expected: `146 passed`
 
 - [ ] **Step 5: Commit (user)**
 
@@ -2051,7 +2067,7 @@ if __name__ == '__main__':
 - [ ] **Step 5: Run all Python tests**
 
 Run: `AWS_DEFAULT_REGION=us-east-1 python -m pytest test/lambda -q -p no:cacheprovider`
-Expected: `136 passed`
+Expected: `149 passed`
 Run: `python scripts/delete_document_vectors.py --help`
 Expected: usage text printed, exit 0
 
@@ -2144,6 +2160,11 @@ Expected: `{"event": "indexed", "docId": "...", "chunks": ..., "chunkKeysFilled"
 
 Run: `curl -s https://<SiteUrl>/api/entries/<entryId>/evidence`
 Expected: `{"evidence": [{"docId": "...", "page": 1, "text": "...", "chunkKey": "<docId>#p1#c0", "fileUrl": "https://..."}]}`. Opening `fileUrl` shows the PDF.
+
+- [ ] **Step 5b: Confirm DeleteVectors ignores missing keys** (spec §12 assumption)
+
+Run: `aws s3vectors delete-vectors --vector-bucket-name <VectorBucketName> --index-name penny-docs --keys does-not-exist#p1#c0`
+Expected: exit 0 with no error. If it errors, `delete_keys` must filter to existing keys first.
 
 - [ ] **Step 6: Verify the DLQ is empty**
 
