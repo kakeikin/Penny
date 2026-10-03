@@ -3,8 +3,10 @@ import json
 import os
 import base64
 import hashlib
+import re
 import uuid
 from datetime import datetime, timezone
+from decimal import Decimal
 
 dynamodb = boto3.resource('dynamodb')
 s3_client = boto3.client('s3')
@@ -25,15 +27,34 @@ def compute_entry_hash(entry: dict) -> str:
     date = entry.get('date', '')
     desc = entry.get('description', '')[:30].strip().lower()
     # Sum all debit amounts as the canonical amount
-    total = sum(l['amount'] for l in entry.get('lines', []) if l['direction'] == 'DEBIT')
+    # Stable with the pre-Decimal float hashes for amounts with <= 2 decimals.
+    total = sum(Decimal(str(l['amount'])) for l in entry.get('lines', []) if l['direction'] == 'DEBIT')
     raw = f"{date}|{total:.2f}|{desc}"
     return hashlib.md5(raw.encode()).hexdigest()
 
 
 def validate_balance(lines: list) -> bool:
-    debit  = sum(l['amount'] for l in lines if l['direction'] == 'DEBIT')
-    credit = sum(l['amount'] for l in lines if l['direction'] == 'CREDIT')
-    return abs(debit - credit) < 0.01
+    debit  = sum(Decimal(str(l['amount'])) for l in lines if l['direction'] == 'DEBIT')
+    credit = sum(Decimal(str(l['amount'])) for l in lines if l['direction'] == 'CREDIT')
+    return debit == credit
+
+
+_FENCED_JSON = re.compile(r'```(?:json)?\s*(.*?)\s*```', re.S)
+
+
+def _reject_constant(name: str):
+    raise ValueError(f'non-finite number in model output: {name}')
+
+
+def load_claude_json(raw: str) -> dict:
+    """Extract the JSON object from Claude's reply and parse it with Decimal (never float).
+
+    Tolerates a markdown fence (also on one line) and prose before/after the JSON.
+    NaN/Infinity are rejected.
+    """
+    m = _FENCED_JSON.search(raw)
+    body = m.group(1) if m else raw[raw.find('{'): raw.rfind('}') + 1] or raw
+    return json.loads(body, parse_float=Decimal, parse_constant=_reject_constant)
 
 
 def get_accounts() -> list:
@@ -51,6 +72,7 @@ Accounts must be selected from the following list:
 {account_json}
 
 For each transaction, produce one journal entry with balanced debit and credit lines.
+Every amount must be a number with exactly 2 decimal places, and debits must equal credits exactly.
 If classification is uncertain, add a note.
 
 Output ONLY valid JSON, no explanation:
@@ -106,24 +128,19 @@ Output ONLY valid JSON, no explanation:
         body=body
     )
     result = json.loads(response['body'].read())
-    raw = result['content'][0]['text']
-
-    # Strip markdown code fences if present
-    raw = raw.strip()
-    if raw.startswith('```'):
-        raw = raw.split('\n', 1)[1]
-        raw = raw.rsplit('```', 1)[0]
-
-    parsed = json.loads(raw)
+    parsed = load_claude_json(result['content'][0]['text'])
     return parsed.get('entries', [])
 
 
-def save_pending_entries(entries: list, file_key: str, file_hash: str, source: str):
+def save_pending_entries(entries: list, file_key: str, file_hash: str, source: str, session_id: str = None):
     entries_table = dynamodb.Table(ENTRIES_TABLE)
     lines_table   = dynamodb.Table(LINES_TABLE)
 
     for entry in entries:
         if not validate_balance(entry['lines']):
+            print(json.dumps({'event': 'entry_unbalanced_skipped', 'date': entry.get('date'),
+                              'debit': str(sum(Decimal(str(l['amount'])) for l in entry['lines'] if l['direction'] == 'DEBIT')),
+                              'credit': str(sum(Decimal(str(l['amount'])) for l in entry['lines'] if l['direction'] == 'CREDIT'))}))
             continue
 
         entry_id   = str(uuid.uuid4())
@@ -132,7 +149,7 @@ def save_pending_entries(entries: list, file_key: str, file_hash: str, source: s
         entry_hash = compute_entry_hash(entry)
         status     = 'DUPLICATE_SUSPECT' if is_duplicate_entry(entry_hash) else 'PENDING'
 
-        entries_table.put_item(Item={
+        item = {
             'entryId':     entry_id,
             'date':        date,
             'yearMonth':   year_month,
@@ -143,7 +160,11 @@ def save_pending_entries(entries: list, file_key: str, file_hash: str, source: s
             'fileHash':    file_hash,
             'entryHash':   entry_hash,
             'createdAt':   datetime.now(timezone.utc).isoformat(),
-        })
+        }
+        if session_id:
+            item['sessionId'] = session_id
+
+        entries_table.put_item(Item=item)
 
         for i, line in enumerate(entry['lines']):
             lines_table.put_item(Item={
@@ -183,7 +204,13 @@ def handler(event, context):
         body = json.loads(event.get('body', '{}'))
         filename = body.get('filename', 'upload')
         content_type = body.get('contentType', 'application/pdf')
-        key = f'uploads/{uuid.uuid4()}-{filename}'
+        session_id = body.get('sessionId')  # None in owner mode
+
+        # Encode sessionId in the S3 key so the S3-triggered handler can read it
+        if session_id:
+            key = f'uploads/demo-{session_id}/{uuid.uuid4()}-{filename}'
+        else:
+            key = f'uploads/{uuid.uuid4()}-{filename}'
 
         url = s3_client.generate_presigned_url(
             'put_object',
@@ -200,6 +227,13 @@ def handler(event, context):
     for record in event.get('Records', []):
         bucket = record['s3']['bucket']['name']
         key    = record['s3']['object']['key']
+
+        # Extract sessionId from key: uploads/demo-{sid}/file  → sid
+        # Owner uploads:             uploads/file              → None
+        parts = key.split('/')
+        session_id = None
+        if len(parts) >= 2 and parts[1].startswith('demo-'):
+            session_id = parts[1][5:]  # strip 'demo-' prefix
 
         file_obj  = s3_client.get_object(Bucket=bucket, Key=key)
         file_data = file_obj['Body'].read()
@@ -222,5 +256,5 @@ def handler(event, context):
 
         accounts = get_accounts()
         entries  = parse_with_claude(file_data, media_type, accounts)
-        save_pending_entries(entries, key, file_hash, source)
-        print(f'Parsed {len(entries)} entries from {key}')
+        save_pending_entries(entries, key, file_hash, source, session_id=session_id)
+        print(f'Parsed {len(entries)} entries from {key} (session={session_id})')

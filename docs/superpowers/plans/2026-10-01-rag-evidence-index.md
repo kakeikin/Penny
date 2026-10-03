@@ -13,7 +13,7 @@
 **Spec:** `docs/superpowers/specs/2026-10-01-penny-rag-evidence-design.md`
 **Later plans:** Plan 2 — Advisor agent (Converse tool use, `search_documents`, citation validator). Plan 3 — Frontend evidence UI, eval harness, README.
 
-**Pre-verified:** All code in this plan was run in a scratch copy of the repo before writing. Expected results: 90 pytest tests passing (20 existing + 70 new), 14 jest tests passing, and the layer building in Docker with Linux `.so` files.
+**Pre-verified:** All code in this plan was run in a scratch copy of the repo before writing. Expected results: 95 pytest tests passing (20 existing + 75 new), 14 jest tests passing, and the layer building in Docker with Linux `.so` files.
 
 ---
 
@@ -882,6 +882,13 @@ git commit -m "feat: add text-doc schema and S3 Vectors manifest helpers"
 
 ### Task 7: ParseLambda — Decimal money end to end
 
+> **As implemented (post-review):**
+> - `load_claude_json` extracts JSON with a regex. It tolerates a one-line fence and text before or after the JSON, and it rejects NaN/Infinity through `parse_constant`.
+> - Unbalanced entries are no longer dropped silently. A structured `entry_unbalanced_skipped` log line records date, debit and credit, with no description.
+> - `compute_entry_hash` sums `Decimal(str(...))`. This stays stable with old float hashes for amounts of 2 decimals or fewer.
+> - The prompt now says amounts must have exactly 2 decimals.
+> - 5 more tests, so `test_parse_evidence.py` has 7 tests after this task and every later expected count is 5 higher.
+
 **Files:**
 - Modify: `lambda/parse/index.py` (imports; `validate_balance` lines 33–36; the fence-stripping block in `parse_with_claude` lines 109–119)
 - Test: `test/lambda/test_parse_evidence.py`
@@ -956,7 +963,7 @@ In `parse_with_claude`, replace everything from `    raw = result['content'][0][
 - [ ] **Step 4: Run to verify pass, including the existing parse tests**
 
 Run: `AWS_DEFAULT_REGION=us-east-1 python -m pytest test/lambda/test_parse_evidence.py test/lambda/test_parse.py -q`
-Expected: `5 passed`
+Expected: `10 passed`
 
 - [ ] **Step 5: Commit (user)**
 
@@ -1217,7 +1224,7 @@ After the inner `for i, line in enumerate(entry['lines']):` loop (at function in
 - [ ] **Step 10: Run all tests**
 
 Run: `AWS_DEFAULT_REGION=us-east-1 python -m pytest test/lambda -q -p no:cacheprovider`
-Expected: `78 passed`
+Expected: `83 passed`
 
 - [ ] **Step 11: Commit (user)**
 
@@ -1442,7 +1449,7 @@ def handler(event, context):
 - [ ] **Step 4: Run to verify pass**
 
 Run: `AWS_DEFAULT_REGION=us-east-1 python -m pytest test/lambda -q -p no:cacheprovider`
-Expected: `83 passed`
+Expected: `88 passed`
 
 - [ ] **Step 5: Commit (user)**
 
@@ -1583,7 +1590,7 @@ with:
 - [ ] **Step 4: Run to verify pass**
 
 Run: `AWS_DEFAULT_REGION=us-east-1 python -m pytest test/lambda -q -p no:cacheprovider`
-Expected: `87 passed`
+Expected: `92 passed`
 
 - [ ] **Step 5: Commit (user)**
 
@@ -2029,7 +2036,7 @@ if __name__ == '__main__':
 - [ ] **Step 5: Run all Python tests**
 
 Run: `AWS_DEFAULT_REGION=us-east-1 python -m pytest test/lambda -q -p no:cacheprovider`
-Expected: `90 passed`
+Expected: `95 passed`
 Run: `python scripts/delete_document_vectors.py --help`
 Expected: usage text printed, exit 0
 
