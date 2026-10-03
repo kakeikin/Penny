@@ -7,7 +7,7 @@ from penny_common.chunking import (MAX_CHARS, MAX_SINGLE_CHUNK, chunk_document, 
                                    detect_day_first, infer_year_month, vector_key)
 from penny_common.masking import mask_identifiers
 from penny_common.pdftext import SCANNED_MIN_CHARS, PdfTextError, extract_pdf_pages
-from penny_common.textdoc import display_name, build_text_doc, text_doc_key
+from penny_common.textdoc import display_name, build_text_doc, doc_id_for, text_doc_key
 from penny_common.textnorm import normalize, contains_normalized
 from pdf_fixtures import make_pdf
 
@@ -266,3 +266,8 @@ def test_build_text_doc_shape():
                    'fileName': 'a.pdf', 'docType': 'bank_statement', 'uploadedAt': '2026-03-01T00:00:00Z',
                    'statementPeriod': None, 'sessionId': None,
                    'pages': [{'page': 1, 'text': 't', 'extractor': 'pypdf'}], 'entries': []}
+
+
+def test_doc_id_for_namespaces_demo_sessions():
+    assert doc_id_for('h1') == 'h1' and doc_id_for('h1', None) == 'h1'
+    assert doc_id_for('h1', 'abc') == 'demo-abc-h1'

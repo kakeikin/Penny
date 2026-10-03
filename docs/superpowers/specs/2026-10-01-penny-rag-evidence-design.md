@@ -84,7 +84,7 @@ Detail ──► GET /api/entries/{id}/evidence ──► QueryLambda
 ## 3. Data Model
 
 ### docId
-`docId` = the existing `fileHash` (MD5 of the uploaded file). Same file → same ID, consistent with existing duplicate detection. All entries parsed from the same uploaded file already share the same `fileHash`, so they share the same `docId`.
+`docId` = `doc_id_for(fileHash, sessionId)`: the file's MD5 for owner uploads, and `demo-{sid}-{fileHash}` for demo sessions. This means a visitor uploading the same file as the owner can never overwrite the owner's text doc or vectors. All entries parsed from one upload share the same `docId`. Duplicate detection (file and entry) is scoped to the session and pages through the full Scan. The previous `Limit=1` + `FilterExpression` only checked one item, which made it ineffective.
 
 ### Demo-session isolation
 Penny already isolates demo visitors: demo uploads land under `uploads/demo-{sid}/`, their entries carry `sessionId`, and QueryLambda filters by the `X-Session-Id` header (owner data has no `sessionId`). RAG must preserve this:
@@ -269,6 +269,11 @@ Penny has no user-facing document deletion today, so v1 provides `delete_documen
 | Situation | Behavior |
 |---|---|
 | Evidence text not found in pypdf page text | Drop that evidence item, log `evidence_rejected`, keep the entry |
+| Malformed evidence or transcripts from Claude (bad page, non-string text, null lists, >500 chars) | Ignore that item and log the reason. Never raises, so bookkeeping always proceeds |
+| Claude output truncated (`stop_reason == max_tokens`) while transcripts were requested | Retry once without transcripts (pre-RAG behaviour), log `transcripts_truncated` |
+| PDF unreadable by pypdf (`PdfTextError`) | Claude still parses it for bookkeeping. No evidence, no text doc |
+| `text/` write fails after entries are saved | Log `text_doc_write_failed`. Bookkeeping stands, and `backfill_index.py` can recover |
+| One S3 record in a batch fails | Other records still process, and the first error is re-raised for async retry |
 | IndexLambda failure | 2 async retries, then SQS DLQ; re-run is safe (deterministic keys) |
 | Titan throttling | Exponential backoff; v1 embeds one chunk per call |
 | No chunk contains an entry's evidence text | `chunkKey` stays null, log |
@@ -362,5 +367,7 @@ Still to verify:
 - Evidence for image receipts and scanned PDF pages is not independently validated.
 - Citation validator checks presence, not correctness, of citations.
 - yearMonth parsing does not understand textual months (`Mar 16`), CJK dates (`2026年3月14日`), or `YYYY/MM/DD`; such chunks use the statement-period or upload-month fallback. An all-ambiguous DD/MM page (every day ≤ 12) is read as MM/DD. Single-digit `M/D` dates and dates that don't start a line (`Posted 03/16`) are ignored on purpose, so footers like `Page 1/3` aren't misread.
+- ParseLambda validates and prepares every entry before writing, so malformed model output can never leave a partially booked document. A *transient* DynamoDB failure in the middle of the write pass still can, and the retry is then skipped as a duplicate file. A completion marker with deterministic entry IDs is the follow-up fix.
+- Duplicate checks Scan the whole entries table (paginated) for every upload and every entry. That is fine at personal scale. A GSI on `fileHash` / `entryHash` is the follow-up.
 - Masking misses identifiers printed with internal spaces or dashes (`4111 1111 1111 1111`); compact `YYYYMMDD` dates are masked as identifiers by design.
 - Masking is context-dependent (an 8-digit run followed by `.90` is treated as an amount), so in rare cases masked evidence text and masked chunk text differ and the chunkKey backfill leaves `chunkKey` null. This fails safe.

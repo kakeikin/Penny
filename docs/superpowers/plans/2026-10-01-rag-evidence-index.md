@@ -13,7 +13,7 @@
 **Spec:** `docs/superpowers/specs/2026-10-01-penny-rag-evidence-design.md`
 **Later plans:** Plan 2 — Advisor agent (Converse tool use, `search_documents`, citation validator). Plan 3 — Frontend evidence UI, eval harness, README.
 
-**Pre-verified:** All code in this plan was run in a scratch copy of the repo before writing. Expected results: 95 pytest tests passing (20 existing + 75 new), 14 jest tests passing, and the layer building in Docker with Linux `.so` files.
+**Pre-verified:** All code in this plan was run in a scratch copy of the repo before writing. Expected results: 136 pytest tests passing (20 existing + 116 new), 14 jest tests passing, and the layer building in Docker with Linux `.so` files.
 
 ---
 
@@ -976,6 +976,21 @@ git commit -m "fix: parse Claude amounts as Decimal and check balance exactly"
 
 ### Task 8: ParseLambda — pypdf pages, evidence, transcripts, text doc
 
+> **As implemented (post-review, Opus reviewer).** Final files are in the repo. Key differences from the steps below:
+> - **Never raises on model output:** `build_evidence` / `merge_transcripts` coerce page (`_as_page`) and text (`_as_text`), reject a bad page, text over 500 chars, or a page not found, and log `evidence_rejected` with a reason. Evidence on transcribed pages is checked for consistency against Claude's own transcript. `save_pending_entries` wraps evidence in try/except. Null `entries`/`transcripts` become `[]`.
+> - **Timeouts:** Bedrock client `Config(read_timeout=270, retries={'total_max_attempts': 1})` and `MAX_OUTPUT_TOKENS = 12000`. If `stop_reason == 'max_tokens'` while transcripts were requested, the call is retried once without transcripts.
+> - **Pre-existing dedup bug fixed:** `is_duplicate` / `is_duplicate_entry` page through the Scan (`Limit=1` + filter checked only one item) and are scoped by session.
+> - **`docId` scoping:** `docId = penny_common.textdoc.doc_id_for(fileHash, sessionId)`, i.e. `demo-{sid}-{hash}` for demo uploads, used for evidence and for `text/{docId}.json`.
+> - **Handler structure:** the handler loops over records with per-record try/except and re-raises the first failure at the end. The work lives in `process_upload(bucket, key)`. The key is `unquote_plus`-decoded. A `PdfTextError` falls back to `pages=[]`. A failed text-doc write is logged, not raised. Logs use `docId`, never filenames.
+> - **Prompt:** says evidence/transcript `text` is one string with lines joined by `\n`, that pages are 1-based integers, to omit evidence without an exact line, and that transcripts come after entries.
+> - **Round 2 (Opus re-review):**
+>   - `normalize_entry` validates date, lines, accountId, direction and Decimal amounts.
+>   - `save_pending_entries` prepares *every* entry (normalize, balance, dedup status, evidence) before the first write, so a malformed entry can no longer leave a partial document that the now-working dedup would then skip forever.
+>   - Page digit strings must match `[0-9]+`, which rejects `'²'`.
+>   - The demo `sessionId` must match `[A-Za-z0-9-]{1,64}`: `POST /upload` returns 400, and S3 keys that fail are skipped.
+>   - Full suite after this task is 124.
+> - **Consequences:** Task 10's evidence API must match `ev['docId'] == doc_id_for(entry['fileHash'], entry.get('sessionId'))`. Task 11 must set the ParseLambda timeout to **600s** (not 120s), leaving room for the truncation retry after a long first call. Task 12's backfill must use `doc_id_for`. Every later expected count below already includes these tests.
+
 **Files:**
 - Modify: `lambda/parse/index.py`
 - Test: `test/lambda/test_parse_evidence.py` (append)
@@ -1224,7 +1239,7 @@ After the inner `for i, line in enumerate(entry['lines']):` loop (at function in
 - [ ] **Step 10: Run all tests**
 
 Run: `AWS_DEFAULT_REGION=us-east-1 python -m pytest test/lambda -q -p no:cacheprovider`
-Expected: `83 passed`
+Expected: `124 passed`
 
 - [ ] **Step 11: Commit (user)**
 
@@ -1449,7 +1464,7 @@ def handler(event, context):
 - [ ] **Step 4: Run to verify pass**
 
 Run: `AWS_DEFAULT_REGION=us-east-1 python -m pytest test/lambda -q -p no:cacheprovider`
-Expected: `88 passed`
+Expected: `129 passed`
 
 - [ ] **Step 5: Commit (user)**
 
@@ -1590,7 +1605,7 @@ with:
 - [ ] **Step 4: Run to verify pass**
 
 Run: `AWS_DEFAULT_REGION=us-east-1 python -m pytest test/lambda -q -p no:cacheprovider`
-Expected: `92 passed`
+Expected: `133 passed`
 
 - [ ] **Step 5: Commit (user)**
 
@@ -2036,7 +2051,7 @@ if __name__ == '__main__':
 - [ ] **Step 5: Run all Python tests**
 
 Run: `AWS_DEFAULT_REGION=us-east-1 python -m pytest test/lambda -q -p no:cacheprovider`
-Expected: `95 passed`
+Expected: `136 passed`
 Run: `python scripts/delete_document_vectors.py --help`
 Expected: usage text printed, exit 0
 

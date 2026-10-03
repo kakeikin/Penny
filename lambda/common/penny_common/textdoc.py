@@ -4,6 +4,12 @@ import re
 _UUID_PREFIX = re.compile(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}-', re.I)
 
 
+def doc_id_for(file_hash: str, session_id=None) -> str:
+    """Owner documents use the file hash; demo-session documents are namespaced so identical
+    files uploaded by a visitor never overwrite the owner's text doc or vectors."""
+    return f'demo-{session_id}-{file_hash}' if session_id else file_hash
+
+
 def text_doc_key(doc_id: str) -> str:
     return f'text/{doc_id}.json'
 
