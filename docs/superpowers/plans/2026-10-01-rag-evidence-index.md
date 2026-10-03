@@ -13,7 +13,7 @@
 **Spec:** `docs/superpowers/specs/2026-10-01-penny-rag-evidence-design.md`
 **Later plans:** Plan 2 — Advisor agent (Converse tool use, `search_documents`, citation validator). Plan 3 — Frontend evidence UI, eval harness, README.
 
-**Pre-verified:** All code in this plan was run in a scratch copy of the repo before writing. Expected results: 161 pytest tests passing (20 existing + 141 new), 16 jest tests passing, and the layer building in Docker with Linux `.so` files.
+**Pre-verified:** All code in this plan was run in a scratch copy of the repo before writing. Expected results: 174 pytest tests passing (20 existing + 154 new), 16 jest tests passing, and the layer building in Docker with Linux `.so` files.
 
 ---
 
@@ -1840,6 +1840,25 @@ git commit -m "feat: provision S3 Vectors index, IndexLambda, DLQ, and evidence 
 
 ### Task 12: Backfill and cleanup scripts
 
+> **As implemented (post-review):** the final scripts are in the repo.
+> - **Grouping:** `list_documents` groups entries by `doc_id_for(fileHash, sessionId)` and carries existing evidence links over. Entries without `createdAt` never win "earliest".
+> - **Skips:** `build_pages` returns `(None, reason)` for:
+>   - `PdfTextError`;
+>   - a PDF with no text layer;
+>   - images when `--include-images` is not set.
+> - **`--force`:** re-uploads docs that hold real Claude transcripts unchanged (counted as `reindexed`) and regenerates pypdf docs. This makes the documented `-v2` migration runbook work.
+> - **Dry run:** never calls Claude.
+> - **Other options and safeguards:**
+>   - `--limit N`;
+>   - adaptive Bedrock retries;
+>   - a `transcript_truncated` warning;
+>   - failures isolated per document, with a `failed` stat and exit code 1;
+>   - output shows `[i/N]` progress and the file name.
+> - **Delete script:** defaults to `--index penny-docs-v1` and documents its side effects.
+> - If a `--force` rebuild is impossible (for example the source is now unreadable), the existing doc is re-uploaded so it stays in the new index.
+- A `ClientError` failure prints its AWS error code.
+- **Tests:** 16.
+
 **Files:**
 - Create: `scripts/backfill_index.py`, `scripts/delete_document_vectors.py`
 - Test: `test/lambda/test_backfill.py`
@@ -2089,7 +2108,7 @@ if __name__ == '__main__':
 - [ ] **Step 5: Run all Python tests**
 
 Run: `AWS_DEFAULT_REGION=us-east-1 python -m pytest test/lambda -q -p no:cacheprovider`
-Expected: `161 passed`
+Expected: `174 passed`
 Run: `python scripts/delete_document_vectors.py --help`
 Expected: usage text printed, exit 0
 

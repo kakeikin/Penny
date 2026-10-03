@@ -192,9 +192,15 @@ For each `entries[]` item in the text file, find the first chunk on the same pag
 Penny has no user-facing document deletion today, so v1 provides `delete_document_vectors(docId)` (in `penny_common.vectors`), used by `scripts/delete_document_vectors.py`; a future delete-document feature calls the same function. Re-indexing (`scripts/backfill_index.py --force`) needs no explicit delete: IndexLambda diffs the new keys against the old manifest and deletes stale keys. It reads `manifests/{docId}.json` and calls `DeleteVectors` with the exact keys in batches. If the manifest is missing, it falls back to listing the index and deleting keys whose `docId` metadata matches. It deletes the manifest afterwards. Re-indexing embeds first, then writes the manifest ahead as old ∪ new, puts the vectors, deletes the stale keys (old − new), and finally narrows the manifest to new. The manifest therefore lists every key in the index at every step. Both manifest writes re-read and merge, which shrinks the window for a concurrent re-index of the same document to a narrow race. Over-listed keys are harmless and get trimmed by the next re-index. S3 conditional writes would close the race fully.
 
 ### Backfill script
-`scripts/backfill_index.py` regenerates `text/{docId}.json` for existing uploads. PDFs use pypdf only (no Claude cost). Image receipts require Claude transcription and are skipped unless `--include-images` is passed.
-
----
+`scripts/backfill_index.py` writes `text/{docId}.json` for uploads that don't have one, which triggers indexing. It discovers documents through the entries table and groups them by `doc_id_for(fileHash, sessionId)`. Evidence links from existing entries are carried over so chunkKeys refill.
+- PDFs use pypdf only, at no model cost. Unreadable PDFs and PDFs with no text layer at all are skipped.
+- Image receipts need a Claude transcription. They are skipped unless `--include-images` is set, and `--dry-run` never calls Claude.
+- `--force` re-indexes everything. This is the runbook after bumping the vector index to `-v2`.
+  - Docs whose text came from pypdf are regenerated.
+  - Docs that hold Claude transcripts are re-uploaded unchanged, so transcripts are never lost and no model is called.
+  - Docs whose rebuild fails (for example the source is no longer readable) are also re-uploaded unchanged.
+- `--limit N` caps one run.
+- Failures are isolated per document: they are counted and the script exits non-zero.
 
 ## 5. Agent & API
 
