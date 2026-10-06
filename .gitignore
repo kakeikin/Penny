@@ -7,3 +7,6 @@ dist/
 .DS_Store
 lambda/layer/python/
 .layer-build/
+__pycache__/
+*.pyc
+.pytest_cache/
