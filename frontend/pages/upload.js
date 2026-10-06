@@ -10,10 +10,10 @@ async function upload(app) {
               d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
           </svg>
           <p class="text-gray-600 font-medium mb-1">Drag & drop a PDF or image here</p>
-          <p class="text-gray-400 text-sm mb-5">Supports PDF, JPG, PNG</p>
+          <p class="text-gray-400 text-sm mb-5">Supports PDF, JPG, PNG, HEIC (iPhone photos)</p>
           <label class="bg-[#8aaa5e] hover:bg-[#7a9a4e] text-white font-medium px-6 py-2.5 rounded-lg cursor-pointer transition-colors text-sm shadow-sm">
             Choose File
-            <input type="file" id="file-input" accept=".pdf,.jpg,.jpeg,.png" class="hidden" />
+            <input type="file" id="file-input" accept=".pdf,.jpg,.jpeg,.png,.heic,.heif,image/*" class="hidden" />
           </label>
         </div>
       </div>
@@ -169,15 +169,91 @@ async function upload(app) {
   const paymentAccts = allAccounts.filter(a => ['ASSET','LIABILITY'].includes(a.type) && isLeaf(a));
   function acctName(id) { return accountMap[id]?.name || id; }
 
+  /** Render the 5 <td> cells for a line row in view mode. */
+  function lineViewTDs(entryId, i, l) {
+    return `
+      <td class="py-1 text-gray-700">${acctName(l.accountId)}</td>
+      <td class="py-1"><span class="${l.direction === 'DEBIT' ? 'badge-debit' : 'badge-credit'}">${l.direction}</span></td>
+      <td class="py-1 text-right">¥${parseFloat(l.amount).toFixed(2)}</td>
+      <td class="py-1 text-gray-400 text-xs">${l.note || ''}</td>
+      <td class="py-1 text-right whitespace-nowrap">
+        <button onclick="editLine('${entryId}', ${i})"
+          class="text-gray-300 hover:text-blue-500 transition-colors px-1" title="Edit this line">✏️</button>
+        <button onclick="deleteLine('${entryId}', ${i})"
+          class="text-gray-300 hover:text-red-500 transition-colors text-base leading-none px-1" title="Remove this line">×</button>
+      </td>`;
+  }
+
+  /** Render the cells for a line row in edit mode. */
+  function lineEditTDs(entryId, i, l) {
+    const leafAccts = allAccounts.filter(a => isLeaf(a));
+    const acctOpts = leafAccts.map(a =>
+      `<option value="${a.accountId}" ${a.accountId === l.accountId ? 'selected' : ''}>[${a.type}] ${a.name}</option>`
+    ).join('');
+    return `
+      <td colspan="4" class="py-1 pr-2">
+        <div class="flex gap-1 items-center flex-wrap">
+          <select id="le-acct-${entryId}-${i}" class="border rounded px-1 py-0.5 text-xs max-w-[140px]">${acctOpts}</select>
+          <select id="le-dir-${entryId}-${i}" class="border rounded px-1 py-0.5 text-xs">
+            <option value="DEBIT" ${l.direction === 'DEBIT' ? 'selected' : ''}>DEBIT</option>
+            <option value="CREDIT" ${l.direction === 'CREDIT' ? 'selected' : ''}>CREDIT</option>
+          </select>
+          <input id="le-amt-${entryId}-${i}" type="number" step="0.01" value="${parseFloat(l.amount).toFixed(2)}"
+            class="border rounded px-1 py-0.5 text-xs w-20" />
+          <input id="le-note-${entryId}-${i}" type="text" value="${(l.note || '').replace(/"/g, '&quot;')}" placeholder="note"
+            class="border rounded px-1 py-0.5 text-xs flex-1 min-w-[60px]" />
+        </div>
+      </td>
+      <td class="py-1 text-right whitespace-nowrap">
+        <button onclick="saveLineEdit('${entryId}', ${i})"
+          class="text-green-600 hover:text-green-800 font-bold px-1 text-sm" title="Save">✓</button>
+        <button onclick="cancelLineEdit('${entryId}', ${i})"
+          class="text-gray-400 hover:text-gray-600 text-base leading-none px-1" title="Cancel">✕</button>
+      </td>`;
+  }
+
   function showStatus(msg, color = 'text-gray-700') {
     status.className = `card mb-6 ${color}`;
     status.textContent = msg;
     status.classList.remove('hidden');
   }
 
-  async function handleFile(file) {
-    showStatus(`Uploading ${file.name}…`);
+  /** Convert HEIC/HEIF to JPEG via canvas (works on iOS Safari & macOS Safari). */
+  async function normalizeFile(file) {
+    const isHeic = file.type === 'image/heic' || file.type === 'image/heif'
+      || file.name.toLowerCase().endsWith('.heic')
+      || file.name.toLowerCase().endsWith('.heif');
+    if (!isHeic) return file;
+
+    return new Promise((resolve, reject) => {
+      const url = URL.createObjectURL(file);
+      const img = new Image();
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        canvas.width  = img.naturalWidth;
+        canvas.height = img.naturalHeight;
+        canvas.getContext('2d').drawImage(img, 0, 0);
+        canvas.toBlob(blob => {
+          URL.revokeObjectURL(url);
+          if (!blob) { reject(new Error('HEIC conversion failed')); return; }
+          // Create a new File with .jpg extension
+          const jpgName = file.name.replace(/\.heic$/i, '.jpg').replace(/\.heif$/i, '.jpg');
+          resolve(new File([blob], jpgName, { type: 'image/jpeg' }));
+        }, 'image/jpeg', 0.92);
+      };
+      img.onerror = () => {
+        URL.revokeObjectURL(url);
+        reject(new Error('Cannot decode HEIC image. Please convert to JPEG first.'));
+      };
+      img.src = url;
+    });
+  }
+
+  async function handleFile(rawFile) {
+    showStatus(`Uploading ${rawFile.name}…`);
     try {
+      const file = await normalizeFile(rawFile);
+      if (file !== rawFile) showStatus(`Converting iPhone photo to JPEG…`);
       await API.uploadFile(file.name, file.type, file);
       showStatus('File uploaded. Parsing with Claude AI… this may take 20–30 seconds.', 'text-blue-600');
       await new Promise(r => setTimeout(r, 20000));
@@ -207,6 +283,7 @@ async function upload(app) {
             <span class="text-xs text-gray-400 uppercase tracking-wide">${e.source}</span>
           </div>
           <div class="flex gap-2">
+            <button onclick="deletePendingEntry('${e.entryId}')" class="bg-red-50 hover:bg-red-100 text-red-600 font-medium px-3 py-1.5 rounded-lg text-sm transition-colors">Delete</button>
             <button onclick="openUploadEditModal('${e.entryId}')" class="bg-gray-100 hover:bg-gray-200 text-gray-700 font-medium px-3 py-1.5 rounded-lg text-sm transition-colors">Edit</button>
             <button onclick="confirmEntry('${e.entryId}')" class="bg-[#8aaa5e] hover:bg-[#7a9a4e] text-white font-semibold px-4 py-1.5 rounded-lg text-sm transition-colors shadow-sm">Confirm ✓</button>
           </div>
@@ -217,25 +294,101 @@ async function upload(app) {
             <th class="text-left pb-1">Direction</th>
             <th class="text-right pb-1">Amount</th>
             <th class="text-left pb-1">Note</th>
+            <th class="pb-1"></th>
           </tr></thead>
           <tbody id="lines-${e.entryId}">
-            ${(e.lines || []).map(l => `
-            <tr class="border-t border-gray-50">
-              <td class="py-1 text-gray-700">${acctName(l.accountId)}</td>
-              <td class="py-1"><span class="${l.direction === 'DEBIT' ? 'badge-debit' : 'badge-credit'}">${l.direction}</span></td>
-              <td class="py-1 text-right">¥${parseFloat(l.amount).toFixed(2)}</td>
-              <td class="py-1 text-gray-400 text-xs">${l.note || ''}</td>
+            ${(e.lines || []).map((l, i) => `
+            <tr class="border-t border-gray-50" id="line-${e.entryId}-${i}">
+              ${lineViewTDs(e.entryId, i, l)}
             </tr>`).join('')}
           </tbody>
         </table>
+        <div id="balance-warn-${e.entryId}" class="hidden mt-2 text-xs text-red-500 font-medium">
+          ⚠️ Debits ≠ Credits — fix before confirming
+        </div>
       </div>`).join('');
 
     // Store pending entries for edit modal
     window._pendingEntries = pending;
   }
 
+  /** Remove a single line from a pending entry (client-side + balance check). */
+  window.deleteLine = (entryId, lineIndex) => {
+    const entry = (window._pendingEntries || []).find(e => e.entryId === entryId);
+    if (!entry) return;
+
+    entry.lines.splice(lineIndex, 1);
+    document.getElementById(`line-${entryId}-${lineIndex}`)?.remove();
+
+    // Re-number remaining rows and re-render their cells so both buttons stay correct
+    const tbody = document.getElementById(`lines-${entryId}`);
+    if (tbody) {
+      Array.from(tbody.querySelectorAll('tr')).forEach((row, i) => {
+        row.id = `line-${entryId}-${i}`;
+        row.innerHTML = lineViewTDs(entryId, i, entry.lines[i]);
+      });
+    }
+
+    // Check balance
+    const debit  = entry.lines.filter(l => l.direction === 'DEBIT') .reduce((s, l) => s + parseFloat(l.amount), 0);
+    const credit = entry.lines.filter(l => l.direction === 'CREDIT').reduce((s, l) => s + parseFloat(l.amount), 0);
+    const warn   = document.getElementById(`balance-warn-${entryId}`);
+    if (warn) warn.classList.toggle('hidden', Math.abs(debit - credit) < 0.01);
+  };
+
+  /** Switch a line row into edit mode. */
+  window.editLine = (entryId, lineIndex) => {
+    const entry = (window._pendingEntries || []).find(e => e.entryId === entryId);
+    if (!entry || !entry.lines[lineIndex]) return;
+    const row = document.getElementById(`line-${entryId}-${lineIndex}`);
+    if (row) row.innerHTML = lineEditTDs(entryId, lineIndex, entry.lines[lineIndex]);
+  };
+
+  /** Save edits for a line and return to view mode. */
+  window.saveLineEdit = (entryId, lineIndex) => {
+    const entry = (window._pendingEntries || []).find(e => e.entryId === entryId);
+    if (!entry || !entry.lines[lineIndex]) return;
+
+    const accountId = document.getElementById(`le-acct-${entryId}-${lineIndex}`)?.value;
+    const direction = document.getElementById(`le-dir-${entryId}-${lineIndex}`)?.value;
+    const amount    = parseFloat(document.getElementById(`le-amt-${entryId}-${lineIndex}`)?.value);
+    const note      = document.getElementById(`le-note-${entryId}-${lineIndex}`)?.value || '';
+
+    if (!accountId || !direction || isNaN(amount) || amount <= 0) return;
+
+    entry.lines[lineIndex] = { ...entry.lines[lineIndex], accountId, direction, amount, note };
+
+    const row = document.getElementById(`line-${entryId}-${lineIndex}`);
+    if (row) row.innerHTML = lineViewTDs(entryId, lineIndex, entry.lines[lineIndex]);
+
+    // Recheck balance
+    const debit  = entry.lines.filter(l => l.direction === 'DEBIT') .reduce((s, l) => s + parseFloat(l.amount), 0);
+    const credit = entry.lines.filter(l => l.direction === 'CREDIT').reduce((s, l) => s + parseFloat(l.amount), 0);
+    const warn   = document.getElementById(`balance-warn-${entryId}`);
+    if (warn) warn.classList.toggle('hidden', Math.abs(debit - credit) < 0.01);
+  };
+
+  /** Cancel editing a line and restore the original view. */
+  window.cancelLineEdit = (entryId, lineIndex) => {
+    const entry = (window._pendingEntries || []).find(e => e.entryId === entryId);
+    if (!entry || !entry.lines[lineIndex]) return;
+    const row = document.getElementById(`line-${entryId}-${lineIndex}`);
+    if (row) row.innerHTML = lineViewTDs(entryId, lineIndex, entry.lines[lineIndex]);
+  };
+
   window.confirmEntry = async (id) => {
-    await API.put(`/api/entries/${id}/confirm`);
+    const entry = (window._pendingEntries || []).find(e => e.entryId === id);
+    // Pass current (possibly edited) lines so ConfirmLambda uses them
+    const body = entry?.lines ? { lines: entry.lines } : {};
+    await API.put(`/api/entries/${id}/confirm`, body);
+    document.getElementById(`entry-${id}`)?.remove();
+    const remaining = document.querySelectorAll('[id^="entry-"]');
+    if (!remaining.length) document.getElementById('pending-section').classList.add('hidden');
+  };
+
+  window.deletePendingEntry = async (id) => {
+    if (!confirm('Delete this entry?')) return;
+    await API.delete(`/api/entries/${id}`);
     document.getElementById(`entry-${id}`)?.remove();
     const remaining = document.querySelectorAll('[id^="entry-"]');
     if (!remaining.length) document.getElementById('pending-section').classList.add('hidden');

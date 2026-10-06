@@ -1,9 +1,30 @@
+// ── Demo / Owner session management ──────────────────────────────────────────
+// Demo mode: URL contains ?demo=true  →  isolated sessionStorage session
+// Owner mode: no ?demo param          →  sees real data (no sessionId filter)
+const Session = (() => {
+  const isDemo = new URLSearchParams(location.search).get('demo') === 'true';
+
+  function getId() {
+    if (!isDemo) return null;
+    let id = sessionStorage.getItem('penny_demo_session');
+    if (!id) {
+      id = crypto.randomUUID();
+      sessionStorage.setItem('penny_demo_session', id);
+    }
+    return id;
+  }
+
+  return { isDemo, getId };
+})();
+
+// ── API client ────────────────────────────────────────────────────────────────
 const API = {
   async request(method, path, body) {
-    const opts = {
-      method,
-      headers: { 'Content-Type': 'application/json' },
-    };
+    const headers = { 'Content-Type': 'application/json' };
+    const sid = Session.getId();
+    if (sid) headers['X-Session-Id'] = sid;
+
+    const opts = { method, headers };
     if (body) opts.body = JSON.stringify(body);
     const res = await fetch(`${window.API_BASE}${path}`, opts);
     if (!res.ok) {
@@ -20,7 +41,12 @@ const API = {
   delete: (path)        => API.request('DELETE', path),
 
   async uploadFile(filename, contentType, file) {
-    const { uploadUrl, key } = await API.post('/api/upload', { filename, contentType });
+    // Pass sessionId so ParseLambda can tag parsed entries correctly
+    const { uploadUrl, key } = await API.post('/api/upload', {
+      filename,
+      contentType,
+      sessionId: Session.getId(),   // null in owner mode → owner entries
+    });
     await fetch(uploadUrl, { method: 'PUT', body: file, headers: { 'Content-Type': contentType } });
     return key;
   },
