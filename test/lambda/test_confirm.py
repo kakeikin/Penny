@@ -1,7 +1,31 @@
 import sys, os, json
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../lambda/confirm'))
-
+import pytest
 from unittest.mock import patch, MagicMock
+
+_confirm_path = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), '../../lambda/confirm')
+)
+if _confirm_path not in sys.path:
+    sys.path.insert(0, _confirm_path)
+
+
+@pytest.fixture(autouse=True)
+def isolate_confirm_index():
+    saved_path = sys.path[:]
+    saved_module = sys.modules.get('index')
+
+    sys.modules.pop('index', None)
+    if _confirm_path in sys.path:
+        sys.path.remove(_confirm_path)
+    sys.path.insert(0, _confirm_path)
+
+    yield
+
+    sys.modules.pop('index', None)
+    sys.path[:] = saved_path
+    if saved_module is not None:
+        sys.modules['index'] = saved_module
+
 
 def test_lines_balance():
     from index import lines_balance
@@ -10,12 +34,14 @@ def test_lines_balance():
         {'direction': 'CREDIT', 'amount': '100.00'},
     ]) is True
 
+
 def test_lines_unbalanced():
     from index import lines_balance
     assert lines_balance([
         {'direction': 'DEBIT', 'amount': '100.00'},
         {'direction': 'CREDIT', 'amount': '50.00'},
     ]) is False
+
 
 def test_handler_returns_400_if_unbalanced():
     from index import handler

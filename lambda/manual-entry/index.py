@@ -6,10 +6,11 @@ from datetime import datetime, timezone
 
 dynamodb = boto3.resource('dynamodb')
 
-ACCOUNTS_TABLE = os.environ.get('ACCOUNTS_TABLE', 'finance-accounts')
-ENTRIES_TABLE  = os.environ.get('ENTRIES_TABLE', 'finance-journal-entries')
-LINES_TABLE    = os.environ.get('LINES_TABLE', 'finance-journal-lines')
-BUDGETS_TABLE  = os.environ.get('BUDGETS_TABLE', 'finance-budgets')
+ACCOUNTS_TABLE           = os.environ.get('ACCOUNTS_TABLE',           'finance-accounts')
+ENTRIES_TABLE            = os.environ.get('ENTRIES_TABLE',            'finance-journal-entries')
+LINES_TABLE              = os.environ.get('LINES_TABLE',              'finance-journal-lines')
+BUDGETS_TABLE            = os.environ.get('BUDGETS_TABLE',            'finance-budgets')
+PUSH_SUBSCRIPTIONS_TABLE = os.environ.get('PUSH_SUBSCRIPTIONS_TABLE', 'finance-push-subscriptions')
 
 CORS = {'Access-Control-Allow-Origin': '*', 'Content-Type': 'application/json'}
 
@@ -28,10 +29,12 @@ def parse_tags(value):
 
 
 def handler(event, context):
-    method = event.get('httpMethod', '')
-    path   = event.get('path', '')
-    params = event.get('pathParameters') or {}
-    body   = json.loads(event.get('body') or '{}')
+    method     = event.get('httpMethod', '')
+    path       = event.get('path', '')
+    params     = event.get('pathParameters') or {}
+    body       = json.loads(event.get('body') or '{}')
+    headers    = event.get('headers') or {}
+    session_id = headers.get('x-session-id') or headers.get('X-Session-Id')
 
     entries_table  = dynamodb.Table(ENTRIES_TABLE)
     lines_table    = dynamodb.Table(LINES_TABLE)
@@ -50,7 +53,7 @@ def handler(event, context):
 
         tags = parse_tags(body.get('tags', []))
 
-        entries_table.put_item(Item={
+        entry_item = {
             'entryId':     entry_id,
             'date':        date,
             'yearMonth':   year_month,
@@ -61,7 +64,10 @@ def handler(event, context):
             'fileKey':     None,
             'fileHash':    None,
             'createdAt':   datetime.now(timezone.utc).isoformat(),
-        })
+        }
+        if session_id:
+            entry_item['sessionId'] = session_id
+        entries_table.put_item(Item=entry_item)
 
         for i, line in enumerate(lines):
             item = {
@@ -154,6 +160,31 @@ def handler(event, context):
         if not account_id:
             return {'statusCode': 400, 'headers': CORS, 'body': json.dumps({'error': 'accountId required'})}
         dynamodb.Table(BUDGETS_TABLE).delete_item(Key={'accountId': account_id})
+        return {'statusCode': 200, 'headers': CORS, 'body': json.dumps({'ok': True})}
+
+    # POST /api/push/subscribe — save a browser Web Push subscription
+    if method == 'POST' and '/push/subscribe' in path:
+        sub_json = body.get('subscription')
+        if not sub_json:
+            return {'statusCode': 400, 'headers': CORS, 'body': json.dumps({'error': 'subscription required'})}
+        if isinstance(sub_json, dict):
+            sub_json = json.dumps(sub_json)
+        endpoint = body.get('endpoint') or json.loads(sub_json).get('endpoint', '')
+        if not endpoint:
+            return {'statusCode': 400, 'headers': CORS, 'body': json.dumps({'error': 'endpoint required'})}
+        dynamodb.Table(PUSH_SUBSCRIPTIONS_TABLE).put_item(Item={
+            'endpoint':     endpoint,
+            'subscription': sub_json,
+            'createdAt':    datetime.now(timezone.utc).isoformat(),
+        })
+        return {'statusCode': 200, 'headers': CORS, 'body': json.dumps({'ok': True})}
+
+    # DELETE /api/push/subscribe — remove a browser Web Push subscription
+    if method == 'DELETE' and '/push/subscribe' in path:
+        endpoint = body.get('endpoint', '')
+        if not endpoint:
+            return {'statusCode': 400, 'headers': CORS, 'body': json.dumps({'error': 'endpoint required'})}
+        dynamodb.Table(PUSH_SUBSCRIPTIONS_TABLE).delete_item(Key={'endpoint': endpoint})
         return {'statusCode': 200, 'headers': CORS, 'body': json.dumps({'ok': True})}
 
     return {'statusCode': 404, 'headers': CORS, 'body': json.dumps({'error': 'Not found'})}
