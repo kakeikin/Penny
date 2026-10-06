@@ -76,6 +76,7 @@ def _run_main(backfill, monkeypatch, items, files, existing_docs, argv, bedrock=
         return {'Body': io.BytesIO(files[Key])}
 
     s3.get_object.side_effect = get_object
+    s3.list_objects_v2.return_value = {'Contents': [{'Key': k} for k in existing_docs], 'IsTruncated': False}
     table = MagicMock()
     table.scan.return_value = {'Items': items}
     monkeypatch.setattr(backfill.boto3, 'client', lambda name, **kw: s3 if name == 's3' else bedrock)
@@ -141,8 +142,10 @@ def test_delete_script_defaults_to_versioned_index(monkeypatch):
     calls = {}
     monkeypatch.setattr(script, 'delete_document_vectors', lambda s3, sv, b, vb, idx, d: calls.update(idx=idx, d=d) or 3)
     monkeypatch.setattr(script.boto3, 'client', lambda *a, **kw: MagicMock())
-    assert script.main(['--bucket', 'app', '--vector-bucket', 'vb', '--doc-id', 'h1']) == 3
-    assert calls == {'idx': 'penny-docs-v1', 'd': 'h1'}
+    assert script.main(['--bucket', 'app', '--vector-bucket', 'vb', '--index', 'penny-docs-v2', '--doc-id', 'h1']) == 3
+    assert calls == {'idx': 'penny-docs-v2', 'd': 'h1'}
+    with pytest.raises(SystemExit):        # --index is required: no stale default after a migration
+        script.main(['--bucket', 'app', '--vector-bucket', 'vb', '--doc-id', 'h1'])
 
 
 def test_image_transcription_request_and_receipt_doc(backfill, monkeypatch):
@@ -218,3 +221,23 @@ def test_failure_detail_includes_aws_error_code(backfill, monkeypatch, capsys):
     monkeypatch.setattr(backfill.boto3, 'resource', lambda name, **kw: MagicMock(Table=lambda n: table))
     assert backfill.main(['--bucket', 'app'])['failed'] == 1
     assert 'ClientError AccessDenied' in capsys.readouterr().out
+
+
+def test_force_reuploads_text_docs_without_entries(backfill, monkeypatch):
+    orphan = {'docId': 'gone', 'pages': [{'page': 1, 'text': 'x' * 30, 'extractor': 'pypdf'}]}
+    items = [{'entryId': 'a', 'fileHash': 'h1', 'fileKey': 'uploads/a.pdf', 'createdAt': '1'}]
+    stats, s3 = _run_main(backfill, monkeypatch, items, {'uploads/a.pdf': TEXT_PDF},
+                          {'text/gone.json': orphan}, ['--force'])
+    assert stats['written'] == 1 and stats['reindexed'] == 1
+    keys = [c.kwargs['Key'] for c in s3.put_object.call_args_list]
+    assert sorted(keys) == ['text/gone.json', 'text/h1.json']
+
+
+def test_list_text_doc_ids_paginates(backfill):
+    s3 = MagicMock()
+    s3.list_objects_v2.side_effect = [
+        {'Contents': [{'Key': 'text/a.json'}, {'Key': 'text/README'}], 'IsTruncated': True, 'NextContinuationToken': 't'},
+        {'Contents': [{'Key': 'text/demo-s-b.json'}], 'IsTruncated': False},
+    ]
+    assert backfill.list_text_doc_ids(s3, 'app') == ['a', 'demo-s-b']
+    assert s3.list_objects_v2.call_args_list[1].kwargs['ContinuationToken'] == 't'

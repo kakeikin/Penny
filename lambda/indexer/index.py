@@ -7,6 +7,7 @@ from botocore.config import Config
 from botocore.exceptions import ClientError
 
 from penny_common.chunking import chunk_document
+from penny_common.masking import mask_identifiers
 from penny_common.textnorm import contains_normalized
 from penny_common.vectors import delete_keys, manifest_keys, put_vectors, read_manifest, write_manifest
 
@@ -22,7 +23,7 @@ VECTOR_INDEX  = os.environ.get('VECTOR_INDEX', 'penny-docs-v1')
 ENTRIES_TABLE = os.environ.get('ENTRIES_TABLE', 'finance-journal-entries')
 
 EMBED_MODEL_ID   = 'amazon.titan-embed-text-v2:0'
-EMBED_DIMENSIONS = 512
+EMBED_DIMENSIONS = int(os.environ.get('EMBED_DIMENSIONS', '512'))   # set by CDK from the index config
 
 
 def embed(text: str) -> tuple:
@@ -54,7 +55,7 @@ def build_vector(chunk: dict, doc: dict, embedding: list) -> dict:
             'text':      chunk['text'],
             'page':      chunk['page'],
             'fileKey':   doc['fileKey'],
-            'fileName':  doc['fileName'],
+            'fileName':  mask_identifiers(doc['fileName']),   # same masking as the chunk header
         },
     }
 

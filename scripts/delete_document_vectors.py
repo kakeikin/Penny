@@ -2,7 +2,8 @@
 """Delete all vectors (and the manifest) for one document. Runs with operator credentials.
 
 Usage:
-  python scripts/delete_document_vectors.py --bucket <BucketName> --vector-bucket <VectorBucketName> --doc-id <docId>
+  python scripts/delete_document_vectors.py --bucket <BucketName> --vector-bucket <VectorBucketName> \
+      --index <VectorIndexName> --doc-id <docId>
 
 docId is the file hash for owner uploads, or demo-{sessionId}-{fileHash} for demo sessions.
 
@@ -26,7 +27,7 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('--bucket', required=True)
     ap.add_argument('--vector-bucket', required=True)
-    ap.add_argument('--index', default='penny-docs-v1')
+    ap.add_argument('--index', required=True, help='Current index name (CDK output VectorIndexName)')
     ap.add_argument('--doc-id', required=True)
     args = ap.parse_args(argv)
     n = delete_document_vectors(boto3.client('s3'), boto3.client('s3vectors', region_name='us-east-1'),

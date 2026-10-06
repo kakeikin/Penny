@@ -38,6 +38,11 @@ _SESSION_ID = re.compile(r'[A-Za-z0-9-]{1,64}')   # ends up inside vector keys: 
 DIRECTIONS  = ('DEBIT', 'CREDIT')
 
 
+def valid_session_id(value) -> bool:
+    """Demo session ids end up in docIds and vector keys; 'owner' is the owner's vector tag."""
+    return isinstance(value, str) and bool(_SESSION_ID.fullmatch(value)) and value.lower() != 'owner'
+
+
 def compute_md5(data: bytes) -> str:
     return hashlib.md5(data).hexdigest()
 
@@ -80,7 +85,10 @@ def load_claude_json(raw: str) -> dict:
     """
     m = _FENCED_JSON.search(raw)
     body = m.group(1) if m else raw[raw.find('{'): raw.rfind('}') + 1] or raw
-    return json.loads(body, parse_float=Decimal, parse_constant=_reject_constant)
+    parsed = json.loads(body, parse_float=Decimal, parse_constant=_reject_constant)
+    if not isinstance(parsed, dict):
+        raise ValueError('model output is not a JSON object')
+    return parsed
 
 
 def get_accounts() -> list:
@@ -303,9 +311,8 @@ def save_pending_entries(entries: list, file_key: str, file_hash: str, source: s
             print(json.dumps({'event': 'entry_invalid_skipped', 'docId': doc_id or file_hash}))
             continue
         if not validate_balance(entry['lines']):
-            debit, credit = side_totals(entry['lines'])
-            print(json.dumps({'event': 'entry_unbalanced_skipped', 'date': entry['date'],
-                              'debit': str(debit), 'credit': str(credit)}))
+            # No amounts or dates in logs: transaction data stays out of CloudWatch.
+            print(json.dumps({'event': 'entry_unbalanced_skipped', 'docId': doc_id or file_hash}))
             continue
 
         entry_id   = str(uuid.uuid4())
@@ -388,7 +395,7 @@ def handler(event, context):
         filename = body.get('filename', 'upload')
         content_type = body.get('contentType', 'application/pdf')
         session_id = body.get('sessionId')  # None in owner mode
-        if session_id is not None and not (isinstance(session_id, str) and _SESSION_ID.fullmatch(session_id)):
+        if session_id is not None and not valid_session_id(session_id):
             return {
                 'statusCode': 400,
                 'headers': {'Access-Control-Allow-Origin': '*', 'Content-Type': 'application/json'},
@@ -433,7 +440,7 @@ def process_upload(bucket: str, key: str) -> None:
     session_id = None
     if len(parts) >= 2 and parts[1].startswith('demo-'):
         session_id = parts[1][5:]  # strip 'demo-' prefix
-        if not _SESSION_ID.fullmatch(session_id):
+        if not valid_session_id(session_id):
             print(json.dumps({'event': 'invalid_session_key_skipped'}))
             return
 
@@ -468,9 +475,13 @@ def process_upload(bucket: str, key: str) -> None:
     parsed   = parse_with_claude(file_data, media_type, accounts, transcribe_pages)
     pages    = merge_transcripts(pages, parsed['transcripts'])
     entries  = parsed['entries']
-    saved    = save_pending_entries(entries, key, file_hash, source, session_id=session_id,
-                                    pages=pages, source_type=source_type, doc_id=doc_id)
-    if pages:
+    # No pages (unreadable PDF) means no evidence to look for: skip it instead of logging rejections.
+    saved    = save_pending_entries(entries, key, file_hash, source, session_id=session_id, pages=pages,
+                                    source_type=source_type if pages else None, doc_id=doc_id)
+    if pages and not any((p['text'] or '').strip() for p in pages):
+        # e.g. transcripts dropped after truncation: an empty doc would block a later backfill.
+        print(json.dumps({'event': 'text_doc_skipped_empty', 'docId': doc_id}))
+    elif pages:
         try:
             write_text_doc(build_text_doc(doc_id, key, source_type, pages, saved, session_id,
                                           datetime.now(timezone.utc).isoformat()))

@@ -199,6 +199,7 @@ export class FinanceStack extends cdk.Stack {
     // before deleting the old one -- so a fixed name would collide. To change dimension or
     // metadata config: bump the suffix (-v2) and run scripts/backfill_index.py --force.
     const VECTOR_INDEX_NAME = 'penny-docs-v1';
+    const EMBED_DIMENSIONS = 512;   // passed to IndexLambda so code and index can't disagree
     const EMBED_MODEL_ARN = `arn:aws:bedrock:${cdk.Aws.REGION}::foundation-model/amazon.titan-embed-text-v2:0`;
 
     // Vectors are derived data (rebuildable from text/ in the retained AppBucket), so the
@@ -210,7 +211,7 @@ export class FinanceStack extends cdk.Stack {
       vectorBucketArn: vectorBucket.attrVectorBucketArn,
       indexName: VECTOR_INDEX_NAME,
       dataType: 'float32',
-      dimension: 512,
+      dimension: EMBED_DIMENSIONS,
       distanceMetric: 'cosine',
       metadataConfiguration: { nonFilterableMetadataKeys: ['text', 'page', 'fileKey', 'fileName'] },
     });
@@ -225,6 +226,7 @@ export class FinanceStack extends cdk.Stack {
         ...lambdaEnv,
         VECTOR_BUCKET: vectorBucket.vectorBucketName!,
         VECTOR_INDEX: VECTOR_INDEX_NAME,
+        EMBED_DIMENSIONS: String(EMBED_DIMENSIONS),
       },
       timeout: cdk.Duration.minutes(5),
       memorySize: 512,
@@ -236,7 +238,8 @@ export class FinanceStack extends cdk.Stack {
     appBucket.grantRead(indexFn, 'text/*');
     // Key-pattern grants still put s3:List* on the bucket ARN; that is required so a missing
     // manifest returns NoSuchKey rather than AccessDenied, and it cannot be prefix-scoped.
-    appBucket.grantReadWrite(indexFn, 'manifests/*');
+    appBucket.grantRead(indexFn, 'manifests/*');
+    appBucket.grantPut(indexFn, 'manifests/*');   // IndexLambda never deletes manifests
     entriesTable.grant(indexFn, 'dynamodb:UpdateItem');
     indexFn.addToRolePolicy(new iam.PolicyStatement({
       // List/GetVectors are only needed by scripts/delete_document_vectors.py (operator creds).
@@ -438,6 +441,7 @@ export class FinanceStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'BucketName', { value: appBucket.bucketName });
     new cdk.CfnOutput(this, 'DistributionId', { value: distribution.distributionId });
     new cdk.CfnOutput(this, 'VectorBucketName', { value: vectorBucket.vectorBucketName! });
+    new cdk.CfnOutput(this, 'VectorIndexName', { value: VECTOR_INDEX_NAME });
     new cdk.CfnOutput(this, 'IndexDlqUrl', { value: indexDlq.queueUrl });
   }
 }

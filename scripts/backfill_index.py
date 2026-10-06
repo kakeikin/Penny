@@ -10,6 +10,7 @@ Modes:
   --force   re-index everything (e.g. after bumping the vector index to -v2). Docs whose
             text came from pypdf are regenerated from the source file; docs that hold Claude
             transcripts are re-uploaded unchanged (no model call, transcripts never lost).
+            text/ docs with no remaining entries are re-uploaded unchanged too.
 
 Notes:
   - PDFs use pypdf only (free). Image receipts need a Claude transcription (paid, ~1 Sonnet
@@ -134,6 +135,21 @@ def build_pages(s3, bedrock, bucket: str, file_key: str, include_images: bool):
     return 'receipt', [{'page': 1, 'text': text, 'extractor': 'claude'}]
 
 
+def list_text_doc_ids(s3, bucket: str) -> list:
+    """docIds of every text/{docId}.json in the bucket."""
+    ids, token = [], None
+    while True:
+        kwargs = {'Bucket': bucket, 'Prefix': 'text/'}
+        if token:
+            kwargs['ContinuationToken'] = token
+        resp = s3.list_objects_v2(**kwargs)
+        ids += [o['Key'][len('text/'):-len('.json')] for o in resp.get('Contents', [])
+                if o['Key'].endswith('.json')]
+        if not resp.get('IsTruncated'):
+            return ids
+        token = resp['NextContinuationToken']
+
+
 def _put_text_doc(s3, bucket: str, doc: dict) -> None:
     s3.put_object(Bucket=bucket, Key=text_doc_key(doc['docId']),
                   Body=json.dumps(doc, ensure_ascii=False).encode('utf-8'),
@@ -166,6 +182,15 @@ def process(doc, args, s3, bedrock) -> tuple:
     return 'written', f'{len(pages)} pages'
 
 
+def reupload_orphan(doc, args, s3) -> tuple:
+    existing = read_text_doc(s3, args.bucket, doc['docId'])
+    if existing is None:
+        return 'skipped', 'text_doc_vanished'
+    if not args.dry_run:
+        _put_text_doc(s3, args.bucket, existing)
+    return 'reindexed', 'orphan_text_doc'
+
+
 def main(argv=None) -> dict:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('--bucket', required=True, help='App bucket name (CDK output BucketName)')
@@ -185,13 +210,18 @@ def main(argv=None) -> dict:
 
     stats = {'written': 0, 'reindexed': 0, 'exists': 0, 'skipped': 0, 'failed': 0}
     docs = list_documents(table)
+    if args.force:
+        # Docs whose entries were all deleted are not in the entries table but still have a
+        # text doc; re-upload them unchanged so an index migration doesn't drop them.
+        known = {d['docId'] for d in docs}
+        docs += [{'docId': doc_id, 'orphan': True} for doc_id in sorted(set(list_text_doc_ids(s3, args.bucket)) - known)]
     for i, doc in enumerate(docs, start=1):
         if args.limit is not None and stats['written'] + stats['reindexed'] >= args.limit:
             print(f'Reached --limit {args.limit}; stopping.')
             break
-        name = display_name(doc['fileKey'])   # local operator terminal, not CloudWatch
+        name = display_name(doc['fileKey']) if 'fileKey' in doc else '(no entries)'   # local terminal only
         try:
-            stat, detail = process(doc, args, s3, bedrock)
+            stat, detail = reupload_orphan(doc, args, s3) if doc.get('orphan') else process(doc, args, s3, bedrock)
         except ClientError as e:
             stat, detail = 'failed', f"ClientError {e.response.get('Error', {}).get('Code')}"
         except Exception as e:

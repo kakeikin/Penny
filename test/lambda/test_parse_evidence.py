@@ -61,8 +61,8 @@ def test_unbalanced_entry_is_logged_not_silently_dropped(parse, monkeypatch, cap
                        {'accountId': 'b', 'direction': 'CREDIT', 'amount': Decimal('99.99')}]}
     parse.save_pending_entries([entry], 'uploads/k.pdf', 'h', 'PDF')
     out = capsys.readouterr().out
-    assert 'entry_unbalanced_skipped' in out and '"debit": "100.00"' in out
-    assert 'description' not in out          # no document text in logs
+    assert 'entry_unbalanced_skipped' in out
+    assert '100.00' not in out and 'description' not in out and '2026-03-14' not in out   # no transaction data
     parse.dynamodb.Table.return_value.put_item.assert_not_called()
 
 
@@ -414,3 +414,29 @@ def test_s3_key_with_invalid_session_is_skipped(parse, monkeypatch, capsys):
     parse.handler({'Records': [{'s3': {'bucket': {'name': 'app'}, 'object': {'key': 'uploads/demo-a%23b/x.pdf'}}}]}, None)
     s3.get_object.assert_not_called()
     assert 'invalid_session_key_skipped' in capsys.readouterr().out
+
+
+def test_load_claude_json_rejects_non_object(parse):
+    with pytest.raises(ValueError):
+        parse.load_claude_json('[1, 2, 3]')
+
+
+@pytest.mark.parametrize('sid', ['owner', 'OWNER', 'Owner'])
+def test_owner_is_not_a_valid_demo_session(parse, sid):
+    assert parse.valid_session_id(sid) is False
+    assert parse.valid_session_id('123e4567-e89b-12d3-a456-426614174000') is True
+
+
+def test_unreadable_pdf_logs_no_evidence_rejections(parse, monkeypatch, capsys):
+    _run_s3_event(parse, monkeypatch, b'not a pdf', 'uploads/123e4567-e89b-12d3-a456-426614174000-x.pdf',
+                  {'entries': [BALANCED_ENTRY], 'transcripts': []})
+    out = capsys.readouterr().out
+    assert 'pdf_text_unavailable' in out and 'evidence_rejected' not in out
+
+
+def test_all_empty_pages_skip_the_text_doc(parse, monkeypatch, capsys):
+    s3, table = _run_s3_event(parse, monkeypatch, b'\xff\xd8jpeg', 'uploads/123e4567-e89b-12d3-a456-426614174000-r.jpg',
+                              {'entries': [BALANCED_ENTRY], 'transcripts': []})
+    assert table.put_item.called                       # bookkeeping still happens
+    s3.put_object.assert_not_called()
+    assert 'text_doc_skipped_empty' in capsys.readouterr().out

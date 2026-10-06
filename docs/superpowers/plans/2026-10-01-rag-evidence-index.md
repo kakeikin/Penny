@@ -13,7 +13,7 @@
 **Spec:** `docs/superpowers/specs/2026-10-01-penny-rag-evidence-design.md`
 **Later plans:** Plan 2 — Advisor agent (Converse tool use, `search_documents`, citation validator). Plan 3 — Frontend evidence UI, eval harness, README.
 
-**Pre-verified:** All code in this plan was run in a scratch copy of the repo before writing. Expected results: 174 pytest tests passing (20 existing + 154 new), 16 jest tests passing, and the layer building in Docker with Linux `.so` files.
+**Pre-verified:** All code in this plan was run in a scratch copy of the repo before writing. Expected results: 184 pytest tests passing, 18 jest tests passing, and the layer building in Docker with Linux `.so` files.
 
 ---
 
@@ -1827,7 +1827,7 @@ import * as sqs from 'aws-cdk-lib/aws-sqs';
 Run: `npx tsc --noEmit -p .`
 Expected: no output
 Run: `npx jest`
-Expected: `Tests: 16 passed, 16 total`
+Expected: `Tests: 16 passed, 16 total` (18 after the final-fixes round adds `test/layer-check.test.ts`)
 
 - [ ] **Step 10: Commit (user)**
 
@@ -2108,7 +2108,7 @@ if __name__ == '__main__':
 - [ ] **Step 5: Run all Python tests**
 
 Run: `AWS_DEFAULT_REGION=us-east-1 python -m pytest test/lambda -q -p no:cacheprovider`
-Expected: `174 passed`
+Expected: `184 passed`
 Run: `python scripts/delete_document_vectors.py --help`
 Expected: usage text printed, exit 0
 
@@ -2174,45 +2174,67 @@ git commit -m "ci: run pytest, jest, and cdk synth on push"
 
 ### Task 14: Deploy and smoke test (user runs deploy)
 
-`cdk deploy` changes live AWS resources, so the user runs it. **Use only synthetic documents.** The live demo has no auth (spec §12).
+`cdk deploy` changes live AWS resources, so the user runs it. **Use only synthetic documents.** The live demo has no auth (spec §12). Procedures for re-indexing, DLQ replay, and index migration are in `docs/runbooks/rag-operations.md`.
 
 - [ ] **Step 1: Build the layer and deploy (user)**
 
 ```bash
 ./scripts/build-layer.sh
 ```
+Expected: ends with `Layer built:`. `ls lambda/layer/python/penny_common` lists `chunking.py masking.py pdftext.py textdoc.py textnorm.py vectors.py`.
+
 ```bash
 npx cdk deploy
 ```
-Expected: the stack updates and new outputs `VectorBucketName` and `IndexDlqUrl` appear. CloudFormation deletes the `finance/claude-api-key` secret (scheduled deletion).
+Expected:
+- The stack updates and the new outputs `VectorBucketName`, `VectorIndexName` (= `penny-docs-v1`) and `IndexDlqUrl` appear.
+- The `finance/claude-api-key` secret is scheduled for deletion. **Revoke any real key it ever held in the Anthropic console; deleting the secret does not revoke it.**
+- If the deploy stops with "Lambda layer is stale", rerun step 1.
 
-- [ ] **Step 2: Confirm Titan V2 model access** in the Bedrock console (us-east-1 → Model access → "Titan Text Embeddings V2" = Access granted). Without it, IndexLambda fails with `AccessDeniedException` and events land in the DLQ.
+- [ ] **Step 2: Confirm Titan V2 is invocable** in us-east-1 (Bedrock console → Model access). Otherwise IndexLambda gets `AccessDenied` and the events land in the DLQ.
 
-- [ ] **Step 3: Upload a synthetic text-based PDF statement** through the app's Upload page.
-
-- [ ] **Step 4: Verify the pipeline in logs**
+- [ ] **Step 3: Owner upload — text-based PDF.** Upload a synthetic statement PDF through the app.
 
 Run: `aws logs tail /aws/lambda/$(aws lambda list-functions --query "Functions[?contains(FunctionName,'ParseLambda')].FunctionName" --output text) --since 10m`
-Expected: `Parsed N entries from uploads/... (session=None, evidence=N)`
-Run: `aws logs tail /aws/lambda/$(aws lambda list-functions --query "Functions[?contains(FunctionName,'IndexLambda')].FunctionName" --output text) --since 10m`
-Expected: `{"event": "indexed", "docId": "...", "chunks": ..., "chunkKeysFilled": N, ...}`
+Expected: `{"event": "parsed", "docId": "<md5>", "entries": N, "evidence": N}`. Optional `evidence_rejected` lines carry only a reason.
 
-- [ ] **Step 5: Verify the evidence API** for one of the new entries (get an `entryId` from `GET /api/entries?status=PENDING`):
+Run: `aws logs tail /aws/lambda/$(aws lambda list-functions --query "Functions[?contains(FunctionName,'IndexLambda')].FunctionName" --output text) --since 10m`
+Expected: `{"event": "indexed", "docId": "<md5>", "chunks": ..., "chunkKeysFilled": N, ...}`
+
+- [ ] **Step 4: Evidence API (owner).** Get an `entryId` from `GET /api/entries?status=PENDING`.
 
 Run: `curl -s https://<SiteUrl>/api/entries/<entryId>/evidence`
-Expected: `{"evidence": [{"docId": "...", "page": 1, "text": "...", "chunkKey": "<docId>#p1#c0", "fileUrl": "https://..."}]}`. Opening `fileUrl` shows the PDF.
+Expected: `{"evidence": [{"docId": "<md5>", "sourceType": "bank_statement", "page": 1, "text": "...", "chunkKey": "<md5>#p1#c0", "fileUrl": "https://..."}]}`. Opening `fileUrl` shows the PDF inline.
 
-- [ ] **Step 5b: Confirm DeleteVectors ignores missing keys** (spec §12 assumption)
+- [ ] **Step 5: Demo-session isolation.** Open the site with `?demo=true` and upload the **same** PDF. Get `<sid>` from the browser console with `sessionStorage.getItem('penny_demo_session')`, or from the `X-Session-Id` request header in devtools. Then take a demo `entryId` from `GET /api/entries?status=PENDING` sent with header `X-Session-Id: <sid>`.
+
+Run: `curl -s -o /dev/null -w "%{http_code}\n" https://<SiteUrl>/api/entries/<demoEntryId>/evidence`
+Expected: `404` (no session header).
+
+Run: `curl -s -H "X-Session-Id: <sid>" https://<SiteUrl>/api/entries/<demoEntryId>/evidence`
+Expected: `200` and `docId` = `demo-<sid>-<md5>`.
+
+Run: `aws s3vectors get-vectors --vector-bucket-name <VectorBucketName> --index-name penny-docs-v1 --keys "demo-<sid>-<md5>#p1#c0" --return-metadata`
+Expected: `metadata.sessionId` = `<sid>`, and `text` has long digit runs masked (`****1234`). The owner's `<md5>#p1#c0` vector still has `sessionId: "owner"`, so the identical demo upload did not overwrite it.
+
+These commands need a recent AWS CLI v2 with the `s3vectors` commands.
+
+- [ ] **Step 6: Image receipt.** Upload a synthetic receipt photo.
+Expected:
+- `aws s3 cp s3://<BucketName>/text/<md5>.json -` shows `"docType": "receipt"` and `"extractor": "claude"` with non-empty text.
+- IndexLambda logs `"chunks": 1`.
+
+- [ ] **Step 7: DeleteVectors ignores missing keys** (spec §12 assumption)
 
 Run: `aws s3vectors delete-vectors --vector-bucket-name <VectorBucketName> --index-name penny-docs-v1 --keys does-not-exist#p1#c0`
 Expected: exit 0 with no error. If it errors, `delete_keys` must filter to existing keys first.
 
-- [ ] **Step 6: Verify the DLQ is empty**
+- [ ] **Step 8: DLQ is empty**
 
 Run: `aws sqs get-queue-attributes --queue-url <IndexDlqUrl> --attribute-names ApproximateNumberOfMessages`
 Expected: `"ApproximateNumberOfMessages": "0"`
 
-- [ ] **Step 7 (optional): Backfill existing uploads** (dry run first)
+- [ ] **Step 9 (optional): Backfill existing uploads.** Do a dry run first.
 
 ```bash
 python scripts/backfill_index.py --bucket <BucketName> --dry-run
@@ -2221,9 +2243,8 @@ python scripts/backfill_index.py --bucket <BucketName> --dry-run
 python scripts/backfill_index.py --bucket <BucketName>
 ```
 
-- [ ] **Step 8: Check push notifications still work.** The layer now has Linux binaries, so this may fix them. Subscribe in the app and trigger the MonthlyReport Lambda from the console. Expected: a push notification arrives, and the PushNotification Lambda logs show no `ImportError`.
-
----
+- [ ] **Step 10: Push notifications still work.** The layer now has Linux binaries, which may also fix them. Subscribe in the app, then trigger the MonthlyReport Lambda from the console.
+Expected: a push notification arrives, and the PushNotification logs show no `ImportError`.
 
 ## Self-Review Notes
 
@@ -2247,3 +2268,21 @@ python scripts/backfill_index.py --bucket <BucketName>
   - §7 cost table with verified prices;
   - §9 eval.
 - **Statement period:** `statementPeriod` is always written as null in v1, because the parse prompt does not request it. The yearMonth priority still works through the chunk's transaction dates and the upload-date fallback. Adding a `statementPeriod` field to the Claude prompt is a small Plan 2/3 follow-up if eval shows misassigned summary pages.
+
+## Final review fixes (post Task 13)
+
+The whole-implementation Opus review found these, all fixed in one round:
+- **C1:** `lib/layer-check.ts`, called from `bin/app.ts`, refuses `cdk synth/deploy` when `lambda/layer/python/penny_common` differs from the source. It is skipped when `CI` is set and has 2 jest tests.
+- **I1:** under `--force`, `backfill_index.py` also lists `text/` and re-uploads text docs whose entries were all deleted.
+- **I2:** `EMBED_DIMENSIONS` is a CDK constant passed to IndexLambda through env. `VectorIndexName` is a stack output. `delete_document_vectors.py --index` is now required. Procedures are in `docs/runbooks/rag-operations.md`.
+- **I3:** Task 14 was rewritten for the structured logs, with demo-isolation, image-receipt and layer-check steps.
+- **Minors:**
+  - No evidence lookups when there are no pages, which removes noisy rejections.
+  - No text doc is written when every page is empty.
+  - A demo sid of `owner` is rejected.
+  - `entry_unbalanced_skipped` logs only the docId.
+  - Vector `fileName` metadata is masked.
+  - IndexLambda gets only read and put on `manifests/`, with no delete.
+  - Non-object model JSON raises `ValueError`.
+  - `.claude/worktrees/` and `.superpowers/` are gitignored.
+- **Final counts:** pytest 184, jest 18.

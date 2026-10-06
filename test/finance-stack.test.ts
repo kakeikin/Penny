@@ -116,6 +116,8 @@ describe('RAG resources', () => {
     const fnId = fnLogicalId('IndexLambda');
     const fn = template.findResources('AWS::Lambda::Function')[fnId];
     expect(fn.Properties.Environment.Variables.VECTOR_INDEX).toBe('penny-docs-v1');
+    expect(fn.Properties.Environment.Variables.EMBED_DIMENSIONS).toBe('512');
+    template.hasResourceProperties('AWS::S3Vectors::Index', { Dimension: 512 });
     expect(fn.Properties.Environment.Variables.VECTOR_BUCKET).toEqual({ 'Fn::Join': ['', ['penny-vectors-', { Ref: 'AWS::AccountId' }]] });
     expect(fn.DependsOn).toEqual(expect.arrayContaining([expect.stringMatching(/^DocsVectorIndex/)]));
     template.hasResourceProperties('AWS::S3Vectors::VectorBucket', {
@@ -146,6 +148,8 @@ describe('RAG resources', () => {
     const writes = statements.filter((st: any) => actionsOf(st).some(
       a => a.startsWith('s3:PutObject') || a.startsWith('s3:DeleteObject') || a.startsWith('s3:Abort')));
     expect(JSON.stringify(writes)).not.toContain('text/');
+    const deletes = statements.filter((st: any) => actionsOf(st).some(a => a.startsWith('s3:DeleteObject')));
+    expect(deletes).toEqual([]);   // not on text/, not on manifests/
   });
 
   test('GET /api/entries/{id}/evidence is integrated with QueryLambda', () => {

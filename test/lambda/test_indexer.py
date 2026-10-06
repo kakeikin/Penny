@@ -230,3 +230,14 @@ def test_handler_decodes_key_and_rejects_mismatched_doc(idx, capsys):
     with pytest.raises(ValueError):
         idx.handler({'Records': [{'s3': {'bucket': {'name': 'app'}, 'object': {'key': 'text/other.json'}}}]}, None)
     assert '"key": "text/other.json"' in capsys.readouterr().out
+
+
+def test_file_name_metadata_is_masked(idx):
+    v = idx.build_vector({'key': 'd1#p1#c0', 'page': 1, 'yearMonth': '2026-03', 'text': 't'},
+                         {**DOC, 'fileName': 'acct_1234567890_mar.pdf'}, [0.5] * 512)
+    assert v['metadata']['fileName'] == 'acct_****7890_mar.pdf'
+
+
+def test_embed_dimension_comes_from_env(lambda_module, monkeypatch):
+    monkeypatch.setenv('EMBED_DIMENSIONS', '1024')
+    assert lambda_module('indexer').EMBED_DIMENSIONS == 1024
