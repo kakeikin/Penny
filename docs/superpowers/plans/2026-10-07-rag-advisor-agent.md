@@ -31,7 +31,7 @@ Cost is logged per request from `usage` using `penny_common.pricing`.
   - It did its sums in float.
   - It returned `str(e)` to clients.
 
-**Pre-verified:** All code in this plan was run in a scratch copy of the repo before this plan was written: **pytest 245 passed** (184 existing + 61 new), **jest 20 passed**, `cdk synth` clean.
+**Pre-verified:** All code in this plan was run in a scratch copy of the repo before this plan was written: **pytest 281 passed** (184 existing + 97 new), **jest 20 passed**, `cdk synth` clean.
 
 ---
 
@@ -72,6 +72,18 @@ Expected: a text containing `OK`, plus token usage. An `AccessDeniedException` m
 ---
 
 ### Task 2: Shared helpers — citations, pricing, session, embedding, ledger
+
+> **As implemented (post-review):** the final files are in the repo and replace the code blocks below.
+> - **citations:**
+>   - Validates comma-list refs (`[T1, S2]`) and lowercase refs, and normalizes them to `[T1][S2]`.
+>   - The money regex runs in linear time (no ReDoS). It accepts `￥`, `元`, `yuan`, `dollars` and currency codes in any case. It rejects percentages, `x` multipliers, versions and dotted dates.
+>   - Removing a ref never joins two words together or swallows a newline.
+> - **pricing:** matches the model id as a whole token, longest key first. Dated Bedrock ids still match.
+> - **session:** adds `valid_session_id`. ParseLambda now imports it instead of keeping its own copy.
+> - **ledger:**
+>   - Entries come from the `date-index` GSI, one Query per month, with a 36-month backstop.
+>   - Lines are fetched by key Query when there are 50 entries or fewer, and by a single scan above that.
+> - **Tests:** 66 tests. The suite count after this task is 250, so every later expected count rises by 34.
 
 **Files:**
 - Create: `lambda/common/penny_common/{citations,pricing,session,embedding,ledger}.py`
@@ -396,7 +408,7 @@ def flows(lines, accounts) -> tuple:
 - [ ] **Step 8: Run to verify pass**
 
 Run: `python -m pytest test/lambda/test_penny_advisor_helpers.py -q` and expect `32 passed`.
-Then run: `python -m pytest test/lambda -q -p no:cacheprovider` and expect `216 passed`.
+Then run: `python -m pytest test/lambda -q -p no:cacheprovider` and expect `250 passed`.
 
 - [ ] **Step 9: Commit (user)**
 
@@ -449,7 +461,7 @@ git commit -m "feat: add citation, pricing, session, embedding and ledger helper
 
 - [ ] **Step 2: Verify**
 
-Run: `python -m pytest test/lambda -q -p no:cacheprovider` and expect `216 passed`. `test_embed_request_contract` still checks the Titan request body through the shared helper.
+Run: `python -m pytest test/lambda -q -p no:cacheprovider` and expect `250 passed`. `test_embed_request_contract` still checks the Titan request body through the shared helper.
 
 - [ ] **Step 3: Commit (user)**
 
@@ -1109,8 +1121,8 @@ def handler(event, context):
 
 - [ ] **Step 4: Run to verify pass**
 
-Run: `python -m pytest test/lambda/test_advisor.py -q` and expect `29 passed`.
-Then run: `python -m pytest test/lambda -q -p no:cacheprovider` and expect `245 passed`.
+Run: `python -m pytest test/lambda/test_advisor.py -q` and expect `31 passed`.
+Then run: `python -m pytest test/lambda -q -p no:cacheprovider` and expect `281 passed`.
 
 - [ ] **Step 5: Commit (user)**
 
