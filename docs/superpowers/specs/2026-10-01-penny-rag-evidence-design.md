@@ -208,7 +208,8 @@ Penny has no user-facing document deletion today, so v1 provides `delete_documen
 - Replace `invoke_model` with the Bedrock Converse API using tool use.
 - Max 4 tool rounds. On exceeding, stop and return the best available answer with `truncated: true`.
 - Per-call Bedrock timeout plus a total time budget under API Gateway's 29s limit.
-- Model: keep `us.anthropic.claude-sonnet-4-6`; the eval compares Haiku 4.5 to decide on switching.
+- Model: **Claude Haiku 5.5** (`us.anthropic.claude-haiku-5-5`, $0.10/$0.50 per MTok list), decided 2026-10-07. The ID is a CDK constant passed as `ADVISOR_MODEL_ID`, and the eval may switch it. Haiku 5.5 thinks adaptively by default and rejects non-default sampling, so the loop sends no `temperature` and is append-only (thinking blocks are passed back unchanged).
+- Tools read **CONFIRMED** entries only, scoped by session. `get_spending_summary(groupBy=month)` returns `income`/`expense`/`net` per month.
 - The current approach of injecting 100 recent transactions into every prompt is removed.
 
 ### Tools (all read-only, typed parameters, no LLM-written queries)
