@@ -1,0 +1,3 @@
+# Runtime pins live in the Lambda layer; tests use exactly the same versions.
+-r lambda/layer/requirements.txt
+pytest==8.4.2

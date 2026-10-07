@@ -1,0 +1,42 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      AWS_DEFAULT_REGION: us-east-1   # also defaulted in test/lambda/conftest.py; kept for any other tool
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: |
+            requirements-dev.txt
+            lambda/layer/requirements.txt
+      - run: pip install -r requirements-dev.txt
+      - run: python -m pytest test/lambda -q
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - run: npx tsc --noEmit -p .
+      - run: npx jest
+      # The Lambda layer (lambda/layer/python) is built with Docker before deploy and is
+      # gitignored; synth only needs the asset directory to exist, which requirements.txt ensures.
+      - run: npx cdk synth --quiet

@@ -1,16 +1,27 @@
 import boto3
+from botocore.exceptions import ClientError
 import json
 import os
 from collections import defaultdict
 from datetime import datetime
 from decimal import Decimal
 
+from penny_common.textdoc import doc_id_for
+
 dynamodb = boto3.resource('dynamodb')
 
-ACCOUNTS_TABLE = os.environ.get('ACCOUNTS_TABLE', 'finance-accounts')
-ENTRIES_TABLE  = os.environ.get('ENTRIES_TABLE', 'finance-journal-entries')
-LINES_TABLE    = os.environ.get('LINES_TABLE', 'finance-journal-lines')
-BUDGETS_TABLE  = os.environ.get('BUDGETS_TABLE', 'finance-budgets')
+ACCOUNTS_TABLE       = os.environ.get('ACCOUNTS_TABLE',       'finance-accounts')
+ENTRIES_TABLE        = os.environ.get('ENTRIES_TABLE',        'finance-journal-entries')
+LINES_TABLE          = os.environ.get('LINES_TABLE',          'finance-journal-lines')
+BUDGETS_TABLE        = os.environ.get('BUDGETS_TABLE',        'finance-budgets')
+EXCHANGE_RATES_TABLE = os.environ.get('EXCHANGE_RATES_TABLE', 'finance-exchange-rates')
+MONTHLY_CACHE_TABLE  = os.environ.get('MONTHLY_CACHE_TABLE',  'finance-monthly-cache')
+APP_BUCKET           = os.environ.get('APP_BUCKET', '')
+EVIDENCE_URL_TTL     = 300  # seconds
+EVIDENCE_FIELDS      = ('docId', 'sourceType', 'text', 'chunkKey')   # public contract (spec §5)
+EVIDENCE_CONTENT_TYPES = {'pdf': 'application/pdf', 'jpg': 'image/jpeg', 'jpeg': 'image/jpeg', 'png': 'image/png'}
+
+s3_client = boto3.client('s3')
 
 CORS = {'Access-Control-Allow-Origin': '*', 'Content-Type': 'application/json'}
 
@@ -40,20 +51,47 @@ def get_all_accounts() -> dict:
     return {a['accountId']: a for a in items}
 
 
-def get_pending_entries() -> list:
-    table = dynamodb.Table(ENTRIES_TABLE)
-    return table.scan(
-        FilterExpression='#s = :pending OR #s = :dup',
-        ExpressionAttributeNames={'#s': 'status'},
-        ExpressionAttributeValues={':pending': 'PENDING', ':dup': 'DUPLICATE_SUSPECT'},
-    )['Items']
+def _session_filter(session_id):
+    """Return (filter_expr_fragment, attr_names, attr_values) for session isolation.
+
+    Owner mode  (session_id is None): entries where sessionId attribute does NOT exist.
+    Demo mode   (session_id set):     entries where sessionId = <sid>.
+    """
+    if session_id:
+        return 'sessionId = :sid', {}, {':sid': session_id}
+    # attribute_not_exists cannot be used in FilterExpression the same way;
+    # use a workaround: filter where sessionId = '' OR attribute_not_exists.
+    # Simpler: store owner entries without sessionId and filter with attribute_not_exists.
+    return 'attribute_not_exists(sessionId)', {}, {}
 
 
-def get_confirmed_entries(start_date=None, end_date=None) -> list:
+def get_pending_entries(session_id=None) -> list:
     table = dynamodb.Table(ENTRIES_TABLE)
-    fe = '#s = :confirmed'
-    ea_names = {'#s': 'status'}
-    ea_vals  = {':confirmed': 'CONFIRMED'}
+    sf, sf_names, sf_vals = _session_filter(session_id)
+    fe = f'(#s = :pending OR #s = :dup) AND {sf}'
+    ea_names = {'#s': 'status', **sf_names}
+    ea_vals  = {':pending': 'PENDING', ':dup': 'DUPLICATE_SUSPECT', **sf_vals}
+    kwargs = dict(
+        FilterExpression=fe,
+        ExpressionAttributeNames=ea_names,
+        ExpressionAttributeValues=ea_vals,
+    )
+    items = []
+    while True:
+        resp = table.scan(**kwargs)
+        items.extend(resp.get('Items', []))
+        if 'LastEvaluatedKey' not in resp:
+            break
+        kwargs['ExclusiveStartKey'] = resp['LastEvaluatedKey']
+    return items
+
+
+def get_confirmed_entries(start_date=None, end_date=None, session_id=None) -> list:
+    table = dynamodb.Table(ENTRIES_TABLE)
+    sf, sf_names, sf_vals = _session_filter(session_id)
+    fe = f'#s = :confirmed AND {sf}'
+    ea_names = {'#s': 'status', **sf_names}
+    ea_vals  = {':confirmed': 'CONFIRMED', **sf_vals}
     if start_date:
         fe += ' AND #d >= :start'
         ea_names['#d'] = 'date'
@@ -62,11 +100,19 @@ def get_confirmed_entries(start_date=None, end_date=None) -> list:
         fe += ' AND #d <= :end'
         ea_names.setdefault('#d', 'date')
         ea_vals[':end'] = end_date
-    return table.scan(
+    items = []
+    kwargs = dict(
         FilterExpression=fe,
         ExpressionAttributeNames=ea_names,
         ExpressionAttributeValues=ea_vals,
-    )['Items']
+    )
+    while True:
+        resp = table.scan(**kwargs)
+        items.extend(resp.get('Items', []))
+        if 'LastEvaluatedKey' not in resp:
+            break
+        kwargs['ExclusiveStartKey'] = resp['LastEvaluatedKey']
+    return items
 
 
 def get_lines_for_entries(entry_ids: list) -> dict:
@@ -147,9 +193,65 @@ def compute_balance_sheet(accounts_dict, lines_by_entry, all_entries):
     }
 
 
+def _presign_source(file_key: str):
+    """Presigned GET for one uploaded file, served inline with a content type we choose."""
+    content_type = EVIDENCE_CONTENT_TYPES.get(file_key.rsplit('.', 1)[-1].lower())
+    if content_type is None:
+        return None
+    return s3_client.generate_presigned_url(
+        'get_object',
+        Params={'Bucket': APP_BUCKET, 'Key': file_key,
+                'ResponseContentType': content_type, 'ResponseContentDisposition': 'inline'},
+        ExpiresIn=EVIDENCE_URL_TTL,
+    )
+
+
+def get_entry_evidence(entry_id: str, session_id) -> dict:
+    """Return {'evidence': [...]} for an entry, or None if missing or owned by another session.
+
+    Owner entries have no sessionId and owner requests send no X-Session-Id, so the
+    comparison is None == None; a demo session can never read an owner entry or vice versa.
+    """
+    if not entry_id:
+        return None
+    entry = dynamodb.Table(ENTRIES_TABLE).get_item(Key={'entryId': entry_id}).get('Item')
+    if not entry or entry.get('sessionId') != session_id:
+        return None
+    own_doc = doc_id_for(entry['fileHash'], entry.get('sessionId')) if entry.get('fileHash') else None
+    urls = {}
+    out = []
+    for ev in entry.get('evidence', []):
+        try:
+            page = int(ev['page'])
+        except (KeyError, TypeError, ValueError, ArithmeticError):
+            print(json.dumps({'event': 'evidence_malformed_skipped', 'entryId': entry_id}))
+            continue
+        doc_id = ev.get('docId')
+        if doc_id not in urls:
+            # v1: evidence can only point at the entry's own uploaded file.
+            own = doc_id is not None and doc_id == own_doc and entry.get('fileKey')
+            urls[doc_id] = _presign_source(entry['fileKey']) if own else None
+        out.append({**{k: ev.get(k) for k in EVIDENCE_FIELDS}, 'page': page, 'fileUrl': urls[doc_id]})
+    return {'evidence': out}
+
+
 def handler(event, context):
-    path   = event.get('path', '')
-    params = event.get('queryStringParameters') or {}
+    path      = event.get('path', '')
+    params    = event.get('queryStringParameters') or {}
+    headers   = event.get('headers') or {}
+    session_id = headers.get('x-session-id') or headers.get('X-Session-Id') or None
+
+    # GET /api/entries/{id}/evidence — handled before the accounts scan below
+    if path.endswith('/evidence'):
+        entry_id = (event.get('pathParameters') or {}).get('id', '')
+        try:
+            result = get_entry_evidence(entry_id, session_id)
+        except ClientError as e:
+            print(json.dumps({'event': 'evidence_lookup_failed', 'errorType': e.response.get('Error', {}).get('Code')}))
+            return {'statusCode': 500, 'headers': CORS, 'body': json.dumps({'error': 'internal error'})}
+        if result is None:
+            return {'statusCode': 404, 'headers': CORS, 'body': json.dumps({'error': 'not found'})}
+        return {'statusCode': 200, 'headers': CORS, 'body': json.dumps(result, cls=DecimalEncoder)}
 
     accounts_dict = get_all_accounts()
 
@@ -163,11 +265,12 @@ def handler(event, context):
     if path.endswith('/entries'):
         status_filter = params.get('status')
         if status_filter == 'PENDING':
-            entries = get_pending_entries()
+            entries = get_pending_entries(session_id=session_id)
         else:
             entries = get_confirmed_entries(
                 start_date=params.get('startDate'),
                 end_date=params.get('endDate'),
+                session_id=session_id,
             )
         if params.get('accountId'):
             lines_table = dynamodb.Table(LINES_TABLE)
@@ -198,11 +301,11 @@ def handler(event, context):
     if path.endswith('/summary'):
         now = datetime.utcnow()
         month_start = f"{now.year}-{now.month:02d}-01"
-        entries = get_confirmed_entries(start_date=month_start)
+        entries = get_confirmed_entries(start_date=month_start, session_id=session_id)
         lines_by_entry = get_lines_for_entries([e['entryId'] for e in entries])
         stmt = compute_income_statement(entries, lines_by_entry, accounts_dict)
 
-        all_entries = get_confirmed_entries()
+        all_entries = get_confirmed_entries(session_id=session_id)
         all_lines   = get_lines_for_entries([e['entryId'] for e in all_entries])
         bs = compute_balance_sheet(accounts_dict, all_lines, all_entries)
 
@@ -217,6 +320,7 @@ def handler(event, context):
         entries = get_confirmed_entries(
             start_date=params.get('startDate'),
             end_date=params.get('endDate'),
+            session_id=session_id,
         )
         lines_by_entry = get_lines_for_entries([e['entryId'] for e in entries])
         result = compute_income_statement(entries, lines_by_entry, accounts_dict)
@@ -225,7 +329,7 @@ def handler(event, context):
 
     # GET /api/reports/balance-sheet
     if 'balance-sheet' in path:
-        all_entries = get_confirmed_entries(end_date=params.get('asOf'))
+        all_entries = get_confirmed_entries(end_date=params.get('asOf'), session_id=session_id)
         all_lines   = get_lines_for_entries([e['entryId'] for e in all_entries])
         result = compute_balance_sheet(accounts_dict, all_lines, all_entries)
         return {'statusCode': 200, 'headers': CORS,
@@ -239,7 +343,7 @@ def handler(event, context):
             m = (now.month - i - 1) % 12 + 1
             y = now.year if now.month - i > 0 else now.year - 1
             end = f'{y}-{m:02d}-31'
-            entries = get_confirmed_entries(end_date=end)
+            entries = get_confirmed_entries(end_date=end, session_id=session_id)
             lines   = get_lines_for_entries([e['entryId'] for e in entries])
             bs = compute_balance_sheet(accounts_dict, lines, entries)
             monthly.append({
@@ -270,6 +374,19 @@ def handler(event, context):
         items = dynamodb.Table(BUDGETS_TABLE).scan()['Items']
         return {'statusCode': 200, 'headers': CORS,
                 'body': json.dumps(items, cls=DecimalEncoder)}
+
+    # GET /api/exchange-rates
+    if path.endswith('/exchange-rates'):
+        table = dynamodb.Table(EXCHANGE_RATES_TABLE)
+        result = table.get_item(Key={'base': 'USD'})
+        item = result.get('Item')
+        if not item:
+            return {'statusCode': 200, 'headers': CORS, 'body': json.dumps({})}
+        return {'statusCode': 200, 'headers': CORS, 'body': json.dumps({
+            'base':      item['base'],
+            'rates':     {k: float(v) for k, v in item['rates'].items()},
+            'updatedAt': item.get('updatedAt', ''),
+        }, cls=DecimalEncoder)}
 
     # GET /api/alerts
     if path.endswith('/alerts'):

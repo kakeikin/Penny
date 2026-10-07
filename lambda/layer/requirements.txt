@@ -1,0 +1,5 @@
+# boto3 is pinned on purpose: overrides the Lambda runtime's copy (needed for the s3vectors client).
+boto3==1.43.106
+pypdf==6.19.0
+pywebpush==2.3.0
+requests==2.34.2

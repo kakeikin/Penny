@@ -11,7 +11,8 @@
     "@aws-sdk/client-dynamodb": "^3.1024.0",
     "@aws-sdk/lib-dynamodb": "^3.1024.0",
     "aws-cdk-lib": "^2.242.0",
-    "constructs": "^10.5.0"
+    "constructs": "^10.5.0",
+    "playwright": "^1.59.1"
   },
   "devDependencies": {
     "@types/jest": "^30",

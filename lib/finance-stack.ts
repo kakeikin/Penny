@@ -7,19 +7,18 @@ import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as apigw from 'aws-cdk-lib/aws-apigateway';
 import * as cloudfront from 'aws-cdk-lib/aws-cloudfront';
 import * as origins from 'aws-cdk-lib/aws-cloudfront-origins';
-import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
+import * as s3vectors from 'aws-cdk-lib/aws-s3vectors';
+import * as sqs from 'aws-cdk-lib/aws-sqs';
+import * as sns from 'aws-cdk-lib/aws-sns';
+import * as snsSubscriptions from 'aws-cdk-lib/aws-sns-subscriptions';
+import * as events from 'aws-cdk-lib/aws-events';
+import * as targets from 'aws-cdk-lib/aws-events-targets';
 import { Construct } from 'constructs';
 import * as path from 'path';
 
 export class FinanceStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
-
-    // ── Secrets ──────────────────────────────────────────────
-    const claudeSecret = new secretsmanager.Secret(this, 'ClaudeApiKey', {
-      secretName: 'finance/claude-api-key',
-      description: 'Anthropic Claude API key for finance app',
-    });
 
     // ── DynamoDB Tables ───────────────────────────────────────
     const accountsTable = new dynamodb.Table(this, 'AccountsTable', {
@@ -56,6 +55,32 @@ export class FinanceStack extends cdk.Stack {
       removalPolicy: cdk.RemovalPolicy.RETAIN,
     });
 
+    const monthlyCache = new dynamodb.Table(this, 'MonthlyCacheTable', {
+      tableName: 'finance-monthly-cache',
+      partitionKey: { name: 'yearMonth', type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: cdk.RemovalPolicy.RETAIN,
+    });
+
+    const exchangeRates = new dynamodb.Table(this, 'ExchangeRatesTable', {
+      tableName: 'finance-exchange-rates',
+      partitionKey: { name: 'base', type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: cdk.RemovalPolicy.RETAIN,
+    });
+
+    const pushSubscriptions = new dynamodb.Table(this, 'PushSubscriptionsTable', {
+      tableName: 'finance-push-subscriptions',
+      partitionKey: { name: 'endpoint', type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: cdk.RemovalPolicy.RETAIN,
+    });
+
+    const alertTopic = new sns.Topic(this, 'AlertTopic', {
+      topicName: 'finance-budget-alerts',
+      displayName: 'Penny Budget Alerts',
+    });
+
     // ── S3 Bucket ─────────────────────────────────────────────
     const appBucket = new s3.Bucket(this, 'AppBucket', {
       blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
@@ -74,13 +99,17 @@ export class FinanceStack extends cdk.Stack {
       LINES_TABLE: linesTable.tableName,
       APP_BUCKET: appBucket.bucketName,
       BUDGETS_TABLE: budgetsTable.tableName,
+      MONTHLY_CACHE_TABLE: monthlyCache.tableName,
+      EXCHANGE_RATES_TABLE: exchangeRates.tableName,
+      PUSH_SUBSCRIPTIONS_TABLE: pushSubscriptions.tableName,
     };
 
     // ── Lambda Layer: Python dependencies ─────────────────────
     const pyLayer = new lambda.LayerVersion(this, 'PyDepsLayer', {
       code: lambda.Code.fromAsset(path.join(__dirname, '../lambda/layer')),
       compatibleRuntimes: [lambda.Runtime.PYTHON_3_12],
-      description: 'anthropic + boto3',
+      compatibleArchitectures: [lambda.Architecture.X86_64],
+      description: 'pinned boto3, pypdf, pywebpush + penny_common',
     });
 
     // ── Lambda Functions ──────────────────────────────────────
@@ -90,7 +119,9 @@ export class FinanceStack extends cdk.Stack {
       code: lambda.Code.fromAsset(path.join(__dirname, '../lambda/parse')),
       layers: [pyLayer],
       environment: lambdaEnv,
-      timeout: cdk.Duration.seconds(60),
+      // Bedrock read_timeout is 270s; 600s leaves room for the no-transcript retry after truncation.
+      timeout: cdk.Duration.seconds(600),
+      retryAttempts: 1,   // one bad file must not burn ~30 min of Lambda time across async retries
       memorySize: 512,
     });
 
@@ -163,13 +194,77 @@ export class FinanceStack extends cdk.Stack {
       { prefix: 'uploads/' },
     );
 
+    // ── RAG: vector store + IndexLambda ───────────────────────
+    // Every CfnIndex property forces replacement, and CloudFormation creates the replacement
+    // before deleting the old one -- so a fixed name would collide. To change dimension or
+    // metadata config: bump the suffix (-v2) and run scripts/backfill_index.py --force.
+    const VECTOR_INDEX_NAME = 'penny-docs-v1';
+    const EMBED_DIMENSIONS = 512;   // passed to IndexLambda so code and index can't disagree
+    const EMBED_MODEL_ARN = `arn:aws:bedrock:${cdk.Aws.REGION}::foundation-model/amazon.titan-embed-text-v2:0`;
+
+    // Vectors are derived data (rebuildable from text/ in the retained AppBucket), so the
+    // default DELETE removal policy is deliberate: RETAIN + fixed names would block redeploys.
+    const vectorBucket = new s3vectors.CfnVectorBucket(this, 'VectorBucket', {
+      vectorBucketName: `penny-vectors-${cdk.Aws.ACCOUNT_ID}`,
+    });
+    const vectorIndex = new s3vectors.CfnIndex(this, 'DocsVectorIndex', {
+      vectorBucketArn: vectorBucket.attrVectorBucketArn,
+      indexName: VECTOR_INDEX_NAME,
+      dataType: 'float32',
+      dimension: EMBED_DIMENSIONS,
+      distanceMetric: 'cosine',
+      metadataConfiguration: { nonFilterableMetadataKeys: ['text', 'page', 'fileKey', 'fileName'] },
+    });
+
+    const indexDlq = new sqs.Queue(this, 'IndexDlq', { retentionPeriod: cdk.Duration.days(14) });
+    const indexFn = new lambda.Function(this, 'IndexLambda', {
+      runtime: lambda.Runtime.PYTHON_3_12,
+      handler: 'index.handler',
+      code: lambda.Code.fromAsset(path.join(__dirname, '../lambda/indexer')),
+      layers: [pyLayer],
+      environment: {
+        ...lambdaEnv,
+        VECTOR_BUCKET: vectorBucket.vectorBucketName!,
+        VECTOR_INDEX: VECTOR_INDEX_NAME,
+        EMBED_DIMENSIONS: String(EMBED_DIMENSIONS),
+      },
+      timeout: cdk.Duration.minutes(5),
+      memorySize: 512,
+      retryAttempts: 2,
+      deadLetterQueue: indexDlq,
+    });
+    indexFn.node.addDependency(vectorIndex);
+
+    appBucket.grantRead(indexFn, 'text/*');
+    // Key-pattern grants still put s3:List* on the bucket ARN; that is required so a missing
+    // manifest returns NoSuchKey rather than AccessDenied, and it cannot be prefix-scoped.
+    appBucket.grantRead(indexFn, 'manifests/*');
+    appBucket.grantPut(indexFn, 'manifests/*');   // IndexLambda never deletes manifests
+    entriesTable.grant(indexFn, 'dynamodb:UpdateItem');
+    indexFn.addToRolePolicy(new iam.PolicyStatement({
+      // List/GetVectors are only needed by scripts/delete_document_vectors.py (operator creds).
+      actions: ['s3vectors:PutVectors', 's3vectors:DeleteVectors'],
+      resources: [vectorIndex.attrIndexArn],
+    }));
+    indexFn.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['bedrock:InvokeModel'],
+      resources: [EMBED_MODEL_ARN],
+    }));
+
+    // ParseLambda writes text/{docId}.json → IndexLambda. IndexLambda never writes text/.
+    appBucket.addEventNotification(
+      s3.EventType.OBJECT_CREATED,
+      new s3n.LambdaDestination(indexFn),
+      { prefix: 'text/' },
+    );
+
     // ── API Gateway ───────────────────────────────────────────
     const api = new apigw.RestApi(this, 'FinanceApi', {
       restApiName: 'finance-api',
       defaultCorsPreflightOptions: {
         allowOrigins: apigw.Cors.ALL_ORIGINS,
         allowMethods: apigw.Cors.ALL_METHODS,
-        allowHeaders: ['Content-Type', 'Authorization'],
+        allowHeaders: ['Content-Type', 'Authorization', 'X-Session-Id'],
       },
     });
 
@@ -187,6 +282,8 @@ export class FinanceStack extends cdk.Stack {
     const entryRes = entriesRes.addResource('{id}');
     entryRes.addMethod('PUT', new apigw.LambdaIntegration(manualEntryFn));
     entryRes.addMethod('DELETE', new apigw.LambdaIntegration(manualEntryFn));
+
+    entryRes.addResource('evidence').addMethod('GET', new apigw.LambdaIntegration(queryFn));
 
     const confirmRes = entryRes.addResource('confirm');
     confirmRes.addMethod('PUT', new apigw.LambdaIntegration(confirmFn));
@@ -237,6 +334,68 @@ export class FinanceStack extends cdk.Stack {
     const advisor = apiRoot.addResource('advisor');
     advisor.addMethod('POST', advisorIntegration);
 
+    // ── ExchangeRateLambda ────────────────────────────────────
+    const exchangeRateFn = new lambda.Function(this, 'ExchangeRateLambda', {
+      runtime: lambda.Runtime.PYTHON_3_12,
+      handler: 'index.handler',
+      code: lambda.Code.fromAsset(path.join(__dirname, '../lambda/exchange-rate')),
+      layers: [pyLayer],
+      environment: { ...lambdaEnv },
+      timeout: cdk.Duration.seconds(30),
+      memorySize: 256,
+    });
+    exchangeRateFn.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['secretsmanager:GetSecretValue'],
+      resources: ['*'],
+    }));
+    exchangeRates.grantReadWriteData(exchangeRateFn);
+
+    // ── MonthlyReportLambda ───────────────────────────────────
+    const monthlyReportFn = new lambda.Function(this, 'MonthlyReportLambda', {
+      runtime: lambda.Runtime.PYTHON_3_12,
+      handler: 'index.handler',
+      code: lambda.Code.fromAsset(path.join(__dirname, '../lambda/monthly-report')),
+      layers: [pyLayer],
+      environment: { ...lambdaEnv, SNS_TOPIC_ARN: alertTopic.topicArn },
+      timeout: cdk.Duration.seconds(60),
+      memorySize: 512,
+    });
+    entriesTable.grantReadData(monthlyReportFn);
+    linesTable.grantReadData(monthlyReportFn);
+    budgetsTable.grantReadData(monthlyReportFn);
+    monthlyCache.grantReadWriteData(monthlyReportFn);
+    alertTopic.grantPublish(monthlyReportFn);
+
+    // ── PushNotificationLambda ────────────────────────────────
+    const pushNotificationFn = new lambda.Function(this, 'PushNotificationLambda', {
+      runtime: lambda.Runtime.PYTHON_3_12,
+      handler: 'index.handler',
+      code: lambda.Code.fromAsset(path.join(__dirname, '../lambda/push-notification')),
+      layers: [pyLayer],
+      environment: { ...lambdaEnv, VAPID_CLAIMS_EMAIL: 'mailto:jia.jiax@northeastern.edu' },
+      timeout: cdk.Duration.seconds(60),
+      memorySize: 256,
+    });
+    pushSubscriptions.grantReadWriteData(pushNotificationFn);
+    pushNotificationFn.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['secretsmanager:GetSecretValue'],
+      resources: ['*'],
+    }));
+    alertTopic.addSubscription(new snsSubscriptions.LambdaSubscription(pushNotificationFn));
+
+    // ── EventBridge Rules ─────────────────────────────────────
+    // Weekly Monday 00:00 UTC — fetch fresh exchange rates
+    new events.Rule(this, 'WeeklyExchangeRate', {
+      schedule: events.Schedule.cron({ minute: '0', hour: '0', weekDay: 'MON' }),
+      targets: [new targets.LambdaFunction(exchangeRateFn)],
+    });
+
+    // Monthly 1st at 01:00 UTC — pre-compute P&L and check budgets
+    new events.Rule(this, 'MonthlyReport', {
+      schedule: events.Schedule.cron({ minute: '0', hour: '1', day: '1' }),
+      targets: [new targets.LambdaFunction(monthlyReportFn)],
+    });
+
     // /api/summary, /api/reports/*, /api/export/csv
     apiRoot.addResource('summary').addMethod('GET', new apigw.LambdaIntegration(queryFn));
     const reportsRes = apiRoot.addResource('reports');
@@ -244,6 +403,18 @@ export class FinanceStack extends cdk.Stack {
     reportsRes.addResource('balance-sheet').addMethod('GET', new apigw.LambdaIntegration(queryFn));
     reportsRes.addResource('net-worth').addMethod('GET', new apigw.LambdaIntegration(queryFn));
     apiRoot.addResource('export').addResource('csv').addMethod('GET', new apigw.LambdaIntegration(exportFn));
+
+    // /api/exchange-rates — served by queryFn
+    apiRoot.addResource('exchange-rates').addMethod('GET', new apigw.LambdaIntegration(queryFn));
+    exchangeRates.grantReadData(queryFn);
+    monthlyCache.grantReadData(queryFn);
+
+    // /api/push/subscribe — POST to subscribe, DELETE to unsubscribe
+    const pushRes = apiRoot.addResource('push');
+    const subscribeRes = pushRes.addResource('subscribe');
+    subscribeRes.addMethod('POST',   new apigw.LambdaIntegration(manualEntryFn));
+    subscribeRes.addMethod('DELETE', new apigw.LambdaIntegration(manualEntryFn));
+    pushSubscriptions.grantReadWriteData(manualEntryFn);
 
     // ── CloudFront ────────────────────────────────────────────
     const distribution = new cloudfront.Distribution(this, 'Distribution', {
@@ -269,5 +440,8 @@ export class FinanceStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'ApiUrl', { value: api.url });
     new cdk.CfnOutput(this, 'BucketName', { value: appBucket.bucketName });
     new cdk.CfnOutput(this, 'DistributionId', { value: distribution.distributionId });
+    new cdk.CfnOutput(this, 'VectorBucketName', { value: vectorBucket.vectorBucketName! });
+    new cdk.CfnOutput(this, 'VectorIndexName', { value: VECTOR_INDEX_NAME });
+    new cdk.CfnOutput(this, 'IndexDlqUrl', { value: indexDlq.queueUrl });
   }
 }
