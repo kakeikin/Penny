@@ -19,6 +19,10 @@ Cost is logged per request from `usage` using `penny_common.pricing`.
 **Spec:** `docs/superpowers/specs/2026-10-01-penny-rag-evidence-design.md` §5. **Plan 1** (evidence and index) is merged. **Plan 3** covers the frontend citation chips, the eval harness, and the README.
 
 **Decisions made while planning (2026-10-07, approved by the user):**
+- **Update (Task 1 result): the model is Claude Haiku 4.5** (`us.anthropic.claude-haiku-4-5-20251001-v1:0`, $1/$5 per MTok list).
+  - Haiku 5.5's profile is ACTIVE, but invoking it returns "not available for this account". Haiku 4.5 answered a test Converse call.
+  - The constant, the advisor default, the jest assertion, and the advisor cost test (`estCostUsd` `0.000400`) use Haiku 4.5.
+  - Moving to Haiku 5.5 later is a one-line change in `lib/finance-stack.ts`.
 - **Model: Claude Haiku 5.5** ($0.10 / $0.50 per MTok list), replacing the spec's Sonnet 4.6 ($3 / $15). The model is a CDK constant passed through an environment variable, so Plan 3's eval can switch it with no code change.
   - Haiku 5.5 thinks adaptively by default.
   - It rejects non-default sampling parameters, so no `temperature` is sent.
