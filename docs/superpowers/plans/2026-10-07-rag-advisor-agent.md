@@ -1309,6 +1309,12 @@ Expected: the demo entries are unconfirmed, so the answer says there is no data.
 Run: `aws logs tail /aws/lambda/$(aws lambda list-functions --query "Functions[?contains(FunctionName,'AdvisorLambda')].FunctionName" --output text) --since 10m --format short | grep advisor_answered`
 Expected: JSON lines with `rounds`, `toolsUsed`, `inputTokens`, `outputTokens` and `estCostUsd`. There must be no question text and no amounts.
 
+> **As run (2026-10-07, Haiku 4.5, synthetic data):**
+> - **Utilities:** `$120.00 [T1]`, a transaction citation carrying the validated evidence line; tools were `search_documents` and `find_transactions`; `supported`, 0 invalid; $0.004675; 2.5 s.
+> - **Netflix:** `$15.49 [D1]` from chunk `…#p1#c0` of the synthetic statement; tool was `search_documents`; $0.004117; 2.2 s.
+> - **Demo session:** answered `$120.00 [D1]` from the demo's **own** copy of the statement (chunkKey `demo-{sid}-…`), never from owner entries or owner vectors. Plan 1 uploaded the same synthetic file to the demo session, so "no data" was the wrong expectation; isolation holds.
+> - **Logs:** `advisor_answered` lines carry ids, counts, tokens and cost only, with no question text or amounts. Typical cost is about $0.004 per question, with about 3.5k input tokens of which most are the system prompt plus tool schemas.
+
 ---
 
 ## Self-Review Notes
