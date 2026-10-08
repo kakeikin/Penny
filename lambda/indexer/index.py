@@ -7,6 +7,7 @@ from botocore.config import Config
 from botocore.exceptions import ClientError
 
 from penny_common.chunking import chunk_document
+from penny_common.embedding import embed_text
 from penny_common.masking import mask_identifiers
 from penny_common.textnorm import contains_normalized
 from penny_common.vectors import delete_keys, manifest_keys, put_vectors, read_manifest, write_manifest
@@ -22,21 +23,12 @@ VECTOR_BUCKET = os.environ.get('VECTOR_BUCKET', '')
 VECTOR_INDEX  = os.environ.get('VECTOR_INDEX', 'penny-docs-v1')
 ENTRIES_TABLE = os.environ.get('ENTRIES_TABLE', 'finance-journal-entries')
 
-EMBED_MODEL_ID   = 'amazon.titan-embed-text-v2:0'
 EMBED_DIMENSIONS = int(os.environ.get('EMBED_DIMENSIONS', '512'))   # set by CDK from the index config
 
 
 def embed(text: str) -> tuple:
     """Return (embedding, input_token_count) from Titan Text Embeddings V2."""
-    resp = bedrock.invoke_model(
-        modelId=EMBED_MODEL_ID,
-        body=json.dumps({'inputText': text, 'dimensions': EMBED_DIMENSIONS, 'normalize': True}),
-    )
-    out = json.loads(resp['body'].read())
-    embedding = out['embedding']
-    if len(embedding) != EMBED_DIMENSIONS:
-        raise ValueError(f'expected {EMBED_DIMENSIONS}-dim embedding, got {len(embedding)}')
-    return embedding, out.get('inputTextTokenCount', 0)
+    return embed_text(bedrock, text, EMBED_DIMENSIONS)
 
 
 def build_vector(chunk: dict, doc: dict, embedding: list) -> dict:

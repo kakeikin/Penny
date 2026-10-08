@@ -13,6 +13,7 @@ from urllib.parse import unquote_plus
 
 from penny_common.masking import mask_identifiers
 from penny_common.pdftext import PdfTextError, extract_pdf_pages
+from penny_common.session import valid_session_id
 from penny_common.textdoc import build_text_doc, doc_id_for, text_doc_key
 from penny_common.textnorm import contains_normalized
 
@@ -34,13 +35,7 @@ MAX_EVIDENCE_CHARS  = 500
 
 _DIGITS     = re.compile(r'[0-9]+')
 _ISO_DAY    = re.compile(r'\d{4}-\d{2}-\d{2}')
-_SESSION_ID = re.compile(r'[A-Za-z0-9-]{1,64}')   # ends up inside vector keys: no '#' or '/'
 DIRECTIONS  = ('DEBIT', 'CREDIT')
-
-
-def valid_session_id(value) -> bool:
-    """Demo session ids end up in docIds and vector keys; 'owner' is the owner's vector tag."""
-    return isinstance(value, str) and bool(_SESSION_ID.fullmatch(value)) and value.lower() != 'owner'
 
 
 def compute_md5(data: bytes) -> str:
