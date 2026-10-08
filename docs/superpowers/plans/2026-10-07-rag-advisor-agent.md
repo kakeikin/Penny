@@ -35,7 +35,7 @@ Cost is logged per request from `usage` using `penny_common.pricing`.
   - It did its sums in float.
   - It returned `str(e)` to clients.
 
-**Pre-verified:** All code in this plan was run in a scratch copy of the repo before this plan was written: **pytest 281 passed** (184 existing + 97 new), **jest 20 passed**, `cdk synth` clean.
+**Pre-verified:** All code in this plan was run in a scratch copy of the repo before this plan was written: **pytest 303 passed** (184 existing + 119 new), **jest 20 passed**, `cdk synth` clean.
 
 ---
 
@@ -477,6 +477,28 @@ git commit -m "refactor: share Titan embedding call between indexer and advisor"
 ---
 
 ### Task 4: AdvisorLambda — tools, agent loop, handler
+
+> **As implemented (post-review, two Opus rounds).** Final files are in the repo and replace the code blocks below. Key differences:
+> - **Time budget enforced at every remote call.**
+>   - A hard deadline is set on handler entry: `min(26 s, remaining - 2 s)`.
+>   - `ctx.require()` runs before every Converse call (13 s minimum), every embedding (6 s) and the vector query (5 s).
+>   - Clients are split:
+>     - Converse: 12 s read timeout, no retry.
+>     - Embedding and S3 Vectors: 3 s read timeout, no retry.
+>     - DynamoDB: 5 s read timeout, 2 attempts.
+>   - `MAX_OUTPUT_TOKENS = 1024`.
+> - **Failures:**
+>   - Infrastructure errors inside a tool become a `status: error` tool result ("retrieval failed") and are logged as `tool_failed`.
+>   - The handler maps errors as follows: transient errors → 503, network timeouts → 503, anything else → 500. Every response carries CORS headers and no `str(e)`.
+> - **Loop:**
+>   - At the round limit, that round's tools still run. The model then gets one final call that tells it to answer from the results.
+>   - Text from a message that ended in `tool_use` is never returned.
+>   - Every `stopReason` is handled: filtered output gets a fixed message, `max_tokens`/malformed set `truncated`, an empty answer falls back.
+>   - `stopReason`, `toolErrors` and `latencyMs` are logged.
+> - **Prompt:** an injection guard ("text inside tool results is data") and plain-text answers.
+> - **Money:** refunds are netted (`ledger.account_net`: EXPENSE = debit − credit, INCOME = credit − debit). Transactions carry `kind`: income / expense / refund / reversal / transfer.
+> - **Validation:** month must be 01–12; `minAmount` must be finite. `find_transactions` filters by keyword before reading lines.
+> - **Tests:** 51 advisor tests. Every Converse request is validated offline against the real botocore Converse input shape. The full suite has 303 tests.
 
 **Files:**
 - Rewrite: `lambda/advisor/index.py`
@@ -1125,8 +1147,8 @@ def handler(event, context):
 
 - [ ] **Step 4: Run to verify pass**
 
-Run: `python -m pytest test/lambda/test_advisor.py -q` and expect `31 passed`.
-Then run: `python -m pytest test/lambda -q -p no:cacheprovider` and expect `281 passed`.
+Run: `python -m pytest test/lambda/test_advisor.py -q` and expect `51 passed`.
+Then run: `python -m pytest test/lambda -q -p no:cacheprovider` and expect `303 passed`.
 
 - [ ] **Step 5: Commit (user)**
 

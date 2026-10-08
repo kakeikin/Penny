@@ -11,8 +11,8 @@ from penny_common.citations import contains_money, validate_citations
 from penny_common.embedding import embed_text
 from boto3.dynamodb.conditions import Key
 
-from penny_common.ledger import (confirmed_entries, entry_amount, flows, lines_for, money, months_between,
-                                   session_condition)
+from penny_common.ledger import (account_net, confirmed_entries, entry_amount, flows, lines_for, money,
+                                   months_between, session_condition)
 from penny_common.pricing import estimate_cost_usd
 from penny_common.session import session_from_headers, valid_session_id
 
@@ -192,3 +192,14 @@ def test_amounts_are_exact_decimals():
     accounts = {'food': {'type': 'EXPENSE'}, 'bank': {'type': 'ASSET'}, 'pay': {'type': 'INCOME'}}
     assert flows(lines, accounts) == (Decimal('0'), Decimal('0.30'))
     assert flows([{'accountId': 'pay', 'direction': 'CREDIT', 'amount': '3200.00'}], accounts) == (Decimal('3200.00'), Decimal('0'))
+
+
+def test_refunds_and_reversals_are_netted():
+    accounts = {'food': {'type': 'EXPENSE'}, 'bank': {'type': 'ASSET'}, 'pay': {'type': 'INCOME'}}
+    refund = [{'accountId': 'bank', 'direction': 'DEBIT', 'amount': '20.00'},
+              {'accountId': 'food', 'direction': 'CREDIT', 'amount': '20.00'}]
+    assert flows(refund, accounts) == (Decimal('0'), Decimal('-20.00'))
+    reversal = [{'accountId': 'pay', 'direction': 'DEBIT', 'amount': '100.00'},
+                {'accountId': 'bank', 'direction': 'CREDIT', 'amount': '100.00'}]
+    assert flows(reversal, accounts) == (Decimal('-100.00'), Decimal('0'))
+    assert account_net({'direction': 'DEBIT', 'amount': '5'}, 'ASSET') == Decimal('0')

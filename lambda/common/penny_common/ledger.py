@@ -76,13 +76,23 @@ def entry_amount(lines) -> Decimal:
     return sum((money(l['amount']) for l in lines if l['direction'] == 'DEBIT'), Decimal('0'))
 
 
+def account_net(line, account_type: str) -> Decimal:
+    """Signed effect of one line on an INCOME (credit - debit) or EXPENSE (debit - credit) account."""
+    amount = money(line['amount'])
+    if account_type == 'EXPENSE':
+        return amount if line['direction'] == 'DEBIT' else -amount
+    if account_type == 'INCOME':
+        return amount if line['direction'] == 'CREDIT' else -amount
+    return Decimal('0')
+
+
 def flows(lines, accounts) -> tuple:
-    """(income, expense) contributed by one entry's lines."""
+    """(income, expense) contributed by one entry's lines, net of refunds and reversals."""
     income = expense = Decimal('0')
     for line in lines:
         kind = accounts.get(line['accountId'], {}).get('type')
-        if kind == 'INCOME' and line['direction'] == 'CREDIT':
-            income += money(line['amount'])
-        elif kind == 'EXPENSE' and line['direction'] == 'DEBIT':
-            expense += money(line['amount'])
+        if kind == 'INCOME':
+            income += account_net(line, kind)
+        elif kind == 'EXPENSE':
+            expense += account_net(line, kind)
     return income, expense
