@@ -59,12 +59,12 @@ async function reports(app) {
         <thead><tr class="text-xs text-gray-400 uppercase"><th class="text-left pb-2">Account</th><th class="text-right pb-2">Amount</th></tr></thead>
         <tbody>
           <tr class="font-semibold text-gray-500"><td colspan="2" class="pt-2 pb-1">Income</td></tr>
-          ${is.income.map(r => `<tr><td class="py-0.5 pl-3 text-gray-700">${r.name}</td><td class="text-right text-green-600">¥${r.amount.toFixed(2)}</td></tr>`).join('')}
-          <tr class="border-t font-semibold"><td class="pt-2">Total Income</td><td class="text-right text-green-600 pt-2">¥${is.totalIncome.toFixed(2)}</td></tr>
+          ${is.income.map(r => `<tr><td class="py-0.5 pl-3 text-gray-700">${r.name}</td><td class="text-right text-green-600">${Money.fmt(r.amount)}</td></tr>`).join('')}
+          <tr class="border-t font-semibold"><td class="pt-2">Total Income</td><td class="text-right text-green-600 pt-2">${Money.fmt(is.totalIncome)}</td></tr>
           <tr class="font-semibold text-gray-500"><td colspan="2" class="pt-4 pb-1">Expenses</td></tr>
-          ${is.expenses.map(r => `<tr><td class="py-0.5 pl-3 text-gray-700">${r.name}</td><td class="text-right text-red-500">¥${r.amount.toFixed(2)}</td></tr>`).join('')}
-          <tr class="border-t font-semibold"><td class="pt-2">Total Expenses</td><td class="text-right text-red-500 pt-2">¥${is.totalExpenses.toFixed(2)}</td></tr>
-          <tr class="border-t-2 font-bold text-lg"><td class="pt-2">Net Income</td><td class="text-right pt-2 ${is.netIncome >= 0 ? 'text-green-600' : 'text-red-500'}">¥${is.netIncome.toFixed(2)}</td></tr>
+          ${is.expenses.map(r => `<tr><td class="py-0.5 pl-3 text-gray-700">${r.name}</td><td class="text-right text-red-500">${Money.fmt(r.amount)}</td></tr>`).join('')}
+          <tr class="border-t font-semibold"><td class="pt-2">Total Expenses</td><td class="text-right text-red-500 pt-2">${Money.fmt(is.totalExpenses)}</td></tr>
+          <tr class="border-t-2 font-bold text-lg"><td class="pt-2">Net Income</td><td class="text-right pt-2 ${is.netIncome >= 0 ? 'text-green-600' : 'text-red-500'}">${Money.fmt(is.netIncome)}</td></tr>
         </tbody>
       </table>`;
 
@@ -73,12 +73,12 @@ async function reports(app) {
         <thead><tr class="text-xs text-gray-400 uppercase"><th class="text-left pb-2">Account</th><th class="text-right pb-2">Balance</th></tr></thead>
         <tbody>
           <tr class="font-semibold text-gray-500"><td colspan="2" class="pb-1">Assets</td></tr>
-          ${bs.assets.map(r => `<tr><td class="py-0.5 pl-3 text-gray-700">${r.name}</td><td class="text-right">¥${r.balance.toFixed(2)}</td></tr>`).join('')}
-          <tr class="border-t font-semibold"><td class="pt-2">Total Assets</td><td class="text-right pt-2">¥${bs.totalAssets.toFixed(2)}</td></tr>
+          ${bs.assets.map(r => `<tr><td class="py-0.5 pl-3 text-gray-700">${r.name}</td><td class="text-right">${Money.fmt(r.balance)}</td></tr>`).join('')}
+          <tr class="border-t font-semibold"><td class="pt-2">Total Assets</td><td class="text-right pt-2">${Money.fmt(bs.totalAssets)}</td></tr>
           <tr class="font-semibold text-gray-500"><td colspan="2" class="pt-4 pb-1">Liabilities</td></tr>
-          ${bs.liabilities.map(r => `<tr><td class="py-0.5 pl-3 text-gray-700">${r.name}</td><td class="text-right text-red-500">¥${r.balance.toFixed(2)}</td></tr>`).join('')}
+          ${bs.liabilities.map(r => `<tr><td class="py-0.5 pl-3 text-gray-700">${r.name}</td><td class="text-right text-red-500">${Money.fmt(r.balance)}</td></tr>`).join('')}
           <tr class="font-semibold text-gray-500"><td colspan="2" class="pt-4 pb-1">Equity</td></tr>
-          ${bs.equity.map(r => `<tr><td class="py-0.5 pl-3 text-gray-700">${r.name}</td><td class="text-right">¥${r.balance.toFixed(2)}</td></tr>`).join('')}
+          ${bs.equity.map(r => `<tr><td class="py-0.5 pl-3 text-gray-700">${r.name}</td><td class="text-right">${Money.fmt(r.balance)}</td></tr>`).join('')}
         </tbody>
       </table>`;
 
@@ -96,7 +96,7 @@ async function reports(app) {
           tension: 0.3,
         }],
       },
-      options: { scales: { y: { ticks: { callback: v => '¥' + v.toLocaleString() } } } },
+      options: { scales: { y: { ticks: { callback: v => Money.symbol + v.toLocaleString() } } } },
     });
   };
 

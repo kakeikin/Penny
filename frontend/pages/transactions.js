@@ -52,7 +52,7 @@ async function transactions(app) {
         <div class="mb-3">
           <label class="text-sm text-gray-600 font-medium">Amount</label>
           <div class="mt-1 relative">
-            <span class="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 text-sm">¥</span>
+            <span class="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 text-sm">$</span>
             <input id="edit-amount" type="number" step="0.01" min="0" class="w-full border rounded-lg pl-7 pr-3 py-2 text-sm" />
           </div>
         </div>
@@ -194,10 +194,10 @@ async function transactions(app) {
     list.innerHTML = _entries.map(e => {
       const s = summarize(e);
       const amountHtml = s.type === 'expense'
-        ? `<span class="font-semibold text-red-600">-¥${s.amount.toFixed(2)}</span>`
+        ? `<span class="font-semibold text-red-600">-${Money.fmt(s.amount)}</span>`
         : s.type === 'income'
-        ? `<span class="font-semibold text-green-600">+¥${s.amount.toFixed(2)}</span>`
-        : `<span class="font-semibold text-blue-600">¥${s.amount.toFixed(2)}</span>`;
+        ? `<span class="font-semibold text-green-600">+${Money.fmt(s.amount)}</span>`
+        : `<span class="font-semibold text-blue-600">${Money.fmt(s.amount)}</span>`;
 
       const typeLabel = s.type === 'expense' ? 'Expense' : s.type === 'income' ? 'Income' : 'Transfer';
       const typeBadge = s.type === 'expense' ? 'bg-red-50 text-red-600'
@@ -209,7 +209,7 @@ async function transactions(app) {
         <div class="flex justify-between text-sm py-1 border-t border-gray-50">
           <span class="text-gray-600">${acctName(l.accountId)}</span>
           <span class="text-gray-400 text-xs self-center">${l.direction === 'DEBIT' ? '→ Out' : '← In'}</span>
-          <span class="text-gray-800">¥${parseFloat(l.amount).toFixed(2)}${origCurr}</span>
+          <span class="text-gray-800">${Money.fmt(parseFloat(l.amount))}${origCurr}</span>
         </div>`;
       }).join('');
 

@@ -960,7 +960,9 @@ Create `frontend/format.js`:
 const Money = {
   symbol: '$',
   fmt(v) {
-    return Money.symbol + Number(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    const n = Number(v);
+    const abs = Math.abs(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    return (n < 0 ? '-' : '') + Money.symbol + abs;      // -$12.00, not $-12.00
   },
 };
 ````

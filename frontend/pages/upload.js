@@ -58,7 +58,7 @@ async function upload(app) {
         <div class="mb-3">
           <label class="text-sm text-gray-600 font-medium">Amount</label>
           <div class="mt-1 relative">
-            <span class="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 text-sm">¥</span>
+            <span class="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 text-sm">$</span>
             <input id="ue-amount" type="number" step="0.01" min="0" class="w-full border rounded-lg pl-7 pr-3 py-2 text-sm" />
           </div>
         </div>
@@ -77,7 +77,7 @@ async function upload(app) {
             <div>
               <label class="text-xs text-gray-500">Currency</label>
               <select id="ue-orig-currency" class="mt-1 w-full border rounded-lg px-3 py-2 text-sm">
-                <option>USD</option><option>EUR</option><option>GBP</option><option>JPY</option><option>HKD</option><option>CAD</option><option>AUD</option>
+                <option>CNY</option><option>EUR</option><option>GBP</option><option>JPY</option><option>HKD</option><option>CAD</option><option>AUD</option>
               </select>
             </div>
             <div>
@@ -174,7 +174,7 @@ async function upload(app) {
     return `
       <td class="py-1 text-gray-700">${acctName(l.accountId)}</td>
       <td class="py-1"><span class="${l.direction === 'DEBIT' ? 'badge-debit' : 'badge-credit'}">${l.direction}</span></td>
-      <td class="py-1 text-right">¥${parseFloat(l.amount).toFixed(2)}</td>
+      <td class="py-1 text-right">${Money.fmt(parseFloat(l.amount))}</td>
       <td class="py-1 text-gray-400 text-xs">${l.note || ''}</td>
       <td class="py-1 text-right whitespace-nowrap">
         <button onclick="editLine('${entryId}', ${i})"
@@ -457,7 +457,7 @@ async function upload(app) {
       document.getElementById('ue-foreign').checked = true;
       document.getElementById('ue-foreign-fields').classList.remove('hidden');
       document.getElementById('ue-orig-amount').value = fxLine.originalAmount || '';
-      document.getElementById('ue-orig-currency').value = fxLine.originalCurrency || 'USD';
+      document.getElementById('ue-orig-currency').value = fxLine.originalCurrency || 'CNY';
       document.getElementById('ue-rate').value = fxLine.exchangeRate || '';
     } else {
       document.getElementById('ue-foreign').checked = false;
