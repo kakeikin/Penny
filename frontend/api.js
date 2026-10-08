@@ -29,7 +29,9 @@ const API = {
     const res = await fetch(`${window.API_BASE}${path}`, opts);
     if (!res.ok) {
       const err = await res.json().catch(() => ({ error: res.statusText }));
-      throw new Error(err.error || 'Request failed');
+      const e = new Error(err.error || 'Request failed');
+      e.status = res.status;    // callers can tell e.g. 409 (needs review) from other failures
+      throw e;
     }
     const ct = res.headers.get('content-type') || '';
     return ct.includes('application/json') ? res.json() : res.text();

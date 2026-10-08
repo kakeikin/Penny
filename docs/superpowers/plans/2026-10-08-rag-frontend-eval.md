@@ -1706,16 +1706,17 @@ git commit -m "feat: clickable advisor citations and a shared source-evidence vi
 
 ### Task 4: Upload page waits for the real parse result
 
-The page used to wait a fixed 20 s and then report "Parsing complete" whether or not parsing had finished. Now it polls for PENDING entries whose `fileKey` matches the upload. It finishes once their count holds steady for one more poll, because entries are written one by one, or after 2 minutes. A file uploaded before is skipped as a duplicate, so it always ends in the timeout message. The same task:
+The page used to wait a fixed 20 s and then report "Parsing complete" whether or not parsing had finished. Now it polls for PENDING entries whose `fileKey` matches the upload. It finishes once their count holds steady for two more polls, because entries are written one by one, or after 2 minutes. It also stops as soon as the user leaves the Upload page. A file uploaded before is skipped as a duplicate, so it always ends in the timeout message. The same task:
 - escapes pending-entry text;
 - shows original-currency amounts;
 - shows the `fxStatus: "unconverted"` warning, including the printed currency;
 - asks for explicit acknowledgement before confirming such an entry (ConfirmLambda otherwise answers 409);
-- makes Confirm All skip and count entries that still need review, instead of failing halfway.
+- makes Confirm All send the same (edited) lines as a single Confirm, and report confirmed / needs-currency-review (409) / failed counts separately, instead of failing halfway. `API` errors now carry `status`;
+- escapes account names, ids, directions and sources in the pending list and line editor.
 
 **Files:**
 - Create: `frontend/upload-poll.js`, `test/frontend/upload-poll.test.ts`
-- Modify: `frontend/pages/upload.js`, `frontend/index.html`, `frontend/index-mobile.html`
+- Modify: `frontend/pages/upload.js`, `frontend/api.js`, `frontend/index.html`, `frontend/index-mobile.html`
 
 - [ ] **Step 1: Write the failing test.**
 
@@ -1742,12 +1743,27 @@ function harness(responses: any[]) {
 
 const entry = (id: string, fileKey = KEY) => ({ entryId: id, fileKey });
 
-test('waits until this file has entries and the count is stable', async () => {
+test('waits until this file has entries and the count holds for two more polls', async () => {
   const h = harness([[], [entry('a')], [entry('a'), entry('b')], [entry('a'), entry('b')]]);
   const res = await UploadPoll.waitForParsedEntries(h.fetchPending, KEY, h.opts);
   expect(res.status).toBe('parsed');
   expect(res.entries.map((e: any) => e.entryId)).toEqual(['a', 'b']);
-  expect(h.calls()).toBe(4);
+  expect(h.calls()).toBe(5);    // [a,b] seen at polls 3, 4 and 5
+});
+
+test('a pause between entry writes does not end the wait early', async () => {
+  const h = harness([[entry('a')], [entry('a')], [entry('a'), entry('b')], [entry('a'), entry('b')]]);
+  const res = await UploadPoll.waitForParsedEntries(h.fetchPending, KEY, { ...h.opts, stablePolls: 2 });
+  expect(res.entries).toHaveLength(2);
+});
+
+test('stops when cancelled (the user left the page)', async () => {
+  const h = harness([[]]);
+  let left = false;
+  const opts = { ...h.opts, sleep: async () => { left = true; }, cancelled: () => left };
+  const res = await UploadPoll.waitForParsedEntries(h.fetchPending, KEY, opts);
+  expect(res).toEqual({ status: 'cancelled', entries: [] });
+  expect(h.calls()).toBe(1);
 });
 
 test('ignores pending entries from other files', async () => {
@@ -1792,17 +1808,22 @@ const UploadPoll = (() => {
   const realSleep = ms => new Promise(r => setTimeout(r, ms));
 
   // Resolves {status: 'parsed', entries} once the file's PENDING entries appear and their count
-  // holds steady for one more poll (entries are written one by one), or {status: 'timeout'}.
-  // A file uploaded before is skipped by ParseLambda as a duplicate, so it always times out.
+  // holds steady for `stablePolls` more polls (entries are written one by one), or
+  // {status: 'timeout'}. A file uploaded before is skipped by ParseLambda as a duplicate, so it
+  // always times out. `cancelled()` (e.g. the user left the page) stops polling early.
   async function waitForParsedEntries(fetchPending, fileKey,
-      { intervalMs = 3000, timeoutMs = 120000, sleep = realSleep, now = () => Date.now() } = {}) {
+      { intervalMs = 3000, timeoutMs = 120000, stablePolls = 2, sleep = realSleep, now = () => Date.now(),
+        cancelled = () => false } = {}) {
     const deadline = now() + timeoutMs;
     let lastCount = 0;
+    let stable = 0;
     for (;;) {
+      if (cancelled()) return { status: 'cancelled', entries: [] };
       let pending = null;
       try { pending = await fetchPending(); } catch (e) { /* transient: try again next poll */ }
       const mine = (Array.isArray(pending) ? pending : []).filter(e => e.fileKey === fileKey);
-      if (mine.length && mine.length === lastCount) return { status: 'parsed', entries: mine };
+      stable = mine.length && mine.length === lastCount ? stable + 1 : 0;
+      if (stable >= stablePolls) return { status: 'parsed', entries: mine };
       lastCount = mine.length;
       if (now() >= deadline) {
         return mine.length ? { status: 'parsed', entries: mine } : { status: 'timeout', entries: [] };
@@ -1822,19 +1843,50 @@ Apply to `frontend/pages/upload.js`:
 ````diff
 --- a/frontend/pages/upload.js
 +++ b/frontend/pages/upload.js
-@@ -174,8 +174,9 @@
+@@ -161,7 +161,7 @@
+   const parentIds = new Set(allAccounts.map(a => a.parentId).filter(Boolean));
+   function isLeaf(a) { return !parentIds.has(a.accountId); }
+   function opts(list, selectedId = '') {
+-    return list.map(a => `<option value="${a.accountId}" ${a.accountId === selectedId ? 'selected' : ''}>${a.name}</option>`).join('');
++    return list.map(a => `<option value="${Citations.esc(a.accountId)}" ${a.accountId === selectedId ? 'selected' : ''}>${Citations.esc(a.name)}</option>`).join('');
+   }
+   const expenseAccts = allAccounts.filter(a => a.type === 'EXPENSE' && isLeaf(a));
+   const incomeAccts  = allAccounts.filter(a => a.type === 'INCOME' && isLeaf(a));
+@@ -172,10 +172,11 @@
+   /** Render the 5 <td> cells for a line row in view mode. */
+   function lineViewTDs(entryId, i, l) {
      return `
-       <td class="py-1 text-gray-700">${acctName(l.accountId)}</td>
-       <td class="py-1"><span class="${l.direction === 'DEBIT' ? 'badge-debit' : 'badge-credit'}">${l.direction}</span></td>
+-      <td class="py-1 text-gray-700">${acctName(l.accountId)}</td>
+-      <td class="py-1"><span class="${l.direction === 'DEBIT' ? 'badge-debit' : 'badge-credit'}">${l.direction}</span></td>
 -      <td class="py-1 text-right">${Money.fmt(parseFloat(l.amount))}</td>
 -      <td class="py-1 text-gray-400 text-xs">${l.note || ''}</td>
++      <td class="py-1 text-gray-700">${Citations.esc(acctName(l.accountId))}</td>
++      <td class="py-1"><span class="${l.direction === 'DEBIT' ? 'badge-debit' : 'badge-credit'}">${Citations.esc(l.direction)}</span></td>
 +      <td class="py-1 text-right">${Money.fmt(parseFloat(l.amount))}${l.originalCurrency
 +        ? `<div class="text-xs text-gray-400">${Citations.esc(l.originalCurrency)} ${Citations.esc(l.originalAmount)}</div>` : ''}</td>
 +      <td class="py-1 text-gray-400 text-xs">${Citations.esc(l.note || '')}</td>
        <td class="py-1 text-right whitespace-nowrap">
          <button onclick="editLine('${entryId}', ${i})"
            class="text-gray-300 hover:text-blue-500 transition-colors px-1" title="Edit this line">✏️</button>
-@@ -254,11 +255,17 @@
+@@ -188,7 +189,7 @@
+   function lineEditTDs(entryId, i, l) {
+     const leafAccts = allAccounts.filter(a => isLeaf(a));
+     const acctOpts = leafAccts.map(a =>
+-      `<option value="${a.accountId}" ${a.accountId === l.accountId ? 'selected' : ''}>[${a.type}] ${a.name}</option>`
++      `<option value="${Citations.esc(a.accountId)}" ${a.accountId === l.accountId ? 'selected' : ''}>[${Citations.esc(a.type)}] ${Citations.esc(a.name)}</option>`
+     ).join('');
+     return `
+       <td colspan="4" class="py-1 pr-2">
+@@ -200,7 +201,7 @@
+           </select>
+           <input id="le-amt-${entryId}-${i}" type="number" step="0.01" value="${parseFloat(l.amount).toFixed(2)}"
+             class="border rounded px-1 py-0.5 text-xs w-20" />
+-          <input id="le-note-${entryId}-${i}" type="text" value="${(l.note || '').replace(/"/g, '&quot;')}" placeholder="note"
++          <input id="le-note-${entryId}-${i}" type="text" value="${Citations.esc(l.note || '')}" placeholder="note"
+             class="border rounded px-1 py-0.5 text-xs flex-1 min-w-[60px]" />
+         </div>
+       </td>
+@@ -254,11 +255,19 @@
      try {
        const file = await normalizeFile(rawFile);
        if (file !== rawFile) showStatus(`Converting iPhone photo to JPEG…`);
@@ -1843,7 +1895,9 @@ Apply to `frontend/pages/upload.js`:
 -      await new Promise(r => setTimeout(r, 20000));
 +      const key = await API.uploadFile(file.name, file.type, file);
 +      showStatus('File uploaded. Parsing with Claude AI… this usually takes 20–60 seconds.', 'text-blue-600');
-+      const result = await UploadPoll.waitForParsedEntries(() => API.get('/api/entries?status=PENDING'), key);
++      const result = await UploadPoll.waitForParsedEntries(() => API.get('/api/entries?status=PENDING'), key,
++        { cancelled: () => !status.isConnected });          // stop if the user left the Upload page
++      if (result.status === 'cancelled') return;
        await loadPending();
 -      showStatus('Parsing complete. Review entries below.', 'text-green-600');
 +      if (result.status === 'parsed') {
@@ -1856,7 +1910,7 @@ Apply to `frontend/pages/upload.js`:
      } catch (e) {
        showStatus('Error: ' + e.message, 'text-red-600');
      }
-@@ -277,9 +284,14 @@
+@@ -277,10 +286,15 @@
            <span>⚠️</span>
            <span><strong>Possible duplicate</strong> — a similar transaction already exists. Review before confirming.</span>
          </div>` : ''}
@@ -1868,11 +1922,13 @@ Apply to `frontend/pages/upload.js`:
          <div class="flex justify-between items-start mb-3">
            <div>
 -            <p class="font-medium text-gray-800">${e.date} — ${e.description}</p>
+-            <span class="text-xs text-gray-400 uppercase tracking-wide">${e.source}</span>
 +            <p class="font-medium text-gray-800">${Citations.esc(e.date)} — ${Citations.esc(e.description)}</p>
-             <span class="text-xs text-gray-400 uppercase tracking-wide">${e.source}</span>
++            <span class="text-xs text-gray-400 uppercase tracking-wide">${Citations.esc(e.source)}</span>
            </div>
            <div class="flex gap-2">
-@@ -380,7 +392,17 @@
+             <button onclick="deletePendingEntry('${e.entryId}')" class="bg-red-50 hover:bg-red-100 text-red-600 font-medium px-3 py-1.5 rounded-lg text-sm transition-colors">Delete</button>
+@@ -380,7 +394,17 @@
      const entry = (window._pendingEntries || []).find(e => e.entryId === id);
      // Pass current (possibly edited) lines so ConfirmLambda uses them
      const body = entry?.lines ? { lines: entry.lines } : {};
@@ -1891,33 +1947,58 @@ Apply to `frontend/pages/upload.js`:
      document.getElementById(`entry-${id}`)?.remove();
      const remaining = document.querySelectorAll('[id^="entry-"]');
      if (!remaining.length) document.getElementById('pending-section').classList.add('hidden');
-@@ -396,13 +418,22 @@
+@@ -396,13 +420,29 @@
  
    document.getElementById('confirm-all').onclick = async () => {
      const cards = document.querySelectorAll('[id^="entry-"]');
-+    let skipped = 0;
++    let confirmed = 0, review = 0, failed = 0, lastError = '';
      for (const card of cards) {
        const id = card.id.replace('entry-', '');
 -      await API.put(`/api/entries/${id}/confirm`);
 -      card.remove();
++      const entry = (window._pendingEntries || []).find(e => e.entryId === id);
 +      try {
-+        await API.put(`/api/entries/${id}/confirm`);   // unconverted entries answer 409 and stay
++        // Same body as a single Confirm (edited lines), but never the unconverted acknowledgement:
++        // those entries answer 409 and stay for review.
++        await API.put(`/api/entries/${id}/confirm`, entry?.lines ? { lines: entry.lines } : {});
 +        card.remove();
++        confirmed++;
 +      } catch (e) {
-+        skipped++;
++        if (e.status === 409) review++; else { failed++; lastError = e.message; }
 +      }
      }
 -    document.getElementById('pending-section').classList.add('hidden');
 -    showStatus('All entries confirmed.', 'text-green-600');
-+    if (!skipped) {
++    if (!review && !failed) {
 +      document.getElementById('pending-section').classList.add('hidden');
 +      showStatus('All entries confirmed.', 'text-green-600');
 +    } else {
-+      showStatus(`${skipped} ${skipped === 1 ? 'entry needs' : 'entries need'} review before confirming.`, 'text-amber-600');
++      const parts = [`${confirmed} confirmed`];
++      if (review) parts.push(`${review} need${review === 1 ? 's' : ''} currency review`);
++      if (failed) parts.push(`${failed} failed (${lastError})`);
++      showStatus(parts.join(', ') + '.', failed ? 'text-red-600' : 'text-amber-600');
 +    }
    };
  
    // Edit modal logic
+````
+
+Apply to `frontend/api.js`:
+
+````diff
+--- a/frontend/api.js
++++ b/frontend/api.js
+@@ -29,7 +29,9 @@
+     const res = await fetch(`${window.API_BASE}${path}`, opts);
+     if (!res.ok) {
+       const err = await res.json().catch(() => ({ error: res.statusText }));
+-      throw new Error(err.error || 'Request failed');
++      const e = new Error(err.error || 'Request failed');
++      e.status = res.status;    // callers can tell e.g. 409 (needs review) from other failures
++      throw e;
+     }
+     const ct = res.headers.get('content-type') || '';
+     return ct.includes('application/json') ? res.json() : res.text();
 ````
 
 Apply to `frontend/index.html`:
@@ -1952,13 +2033,13 @@ Apply to `frontend/index-mobile.html`:
 
 - [ ] **Step 4: Verify.**
 
-Run: `npx jest` and expect `Tests: 41 passed, 41 total`.
+Run: `npx jest` and expect `Tests: 43 passed, 43 total`.
 Run: `for f in frontend/*.js frontend/pages/*.js; do node --check "$f" || echo "BAD $f"; done` and expect no output.
 
 - [ ] **Step 5: Commit (user)**
 
 ```bash
-git add frontend/upload-poll.js frontend/pages/upload.js frontend/index.html frontend/index-mobile.html test/frontend/upload-poll.test.ts
+git add frontend/upload-poll.js frontend/pages/upload.js frontend/api.js frontend/index.html frontend/index-mobile.html test/frontend/upload-poll.test.ts
 git commit -m "fix: upload page waits for the file's parsed entries instead of a fixed 20 s"
 ```
 
@@ -2004,7 +2085,7 @@ Expected: `package-lock.json` changes in exactly these places:
 
 - [ ] **Step 3: Verify.**
 
-Run: `npx jest` and expect `Tests: 41 passed, 41 total`.
+Run: `npx jest` and expect `Tests: 43 passed, 43 total`.
 
 - [ ] **Step 4: Commit (user)**
 
@@ -2961,4 +3042,4 @@ git commit -m "docs: rewrite README around architecture, cost and eval results"
 - **Found and fixed during Task 1 review:** `PUT /api/entries/{id}/confirm` wrote client lines without a balance check, dropped FX fields, and did not check the session. All three are fixed in Task 1.
 - **Test counts:**
   - pytest: 303 → 364 (Task 1) → 365 (Task 6) → 378 (Task 7).
-  - jest: 20 → 21 (Task 1) → 36 (Task 3) → 41 (Task 4).
+  - jest: 20 → 21 (Task 1) → 36 (Task 3) → 43 (Task 4).
