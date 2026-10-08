@@ -200,6 +200,9 @@ export class FinanceStack extends cdk.Stack {
     // metadata config: bump the suffix (-v2) and run scripts/backfill_index.py --force.
     const VECTOR_INDEX_NAME = 'penny-docs-v1';
     const EMBED_DIMENSIONS = 512;   // passed to IndexLambda so code and index can't disagree
+    // Bedrock cross-region inference profile for the advisor agent. Haiku 5.5 is listed but not
+    // yet enabled for this account; switch here once it is (verify with a test Converse call).
+    const ADVISOR_MODEL_ID = 'us.anthropic.claude-haiku-4-5-20251001-v1:0';
     const EMBED_MODEL_ARN = `arn:aws:bedrock:${cdk.Aws.REGION}::foundation-model/amazon.titan-embed-text-v2:0`;
 
     // Vectors are derived data (rebuildable from text/ in the retained AppBucket), so the
@@ -313,17 +316,31 @@ export class FinanceStack extends cdk.Stack {
       handler: 'index.handler',
       code: lambda.Code.fromAsset(path.join(__dirname, '../lambda/advisor')),
       layers: [pyLayer],
-      environment: lambdaEnv,
-      timeout: cdk.Duration.seconds(60),
+      environment: {
+        ...lambdaEnv,
+        VECTOR_BUCKET: vectorBucket.vectorBucketName!,
+        VECTOR_INDEX: VECTOR_INDEX_NAME,
+        EMBED_DIMENSIONS: String(EMBED_DIMENSIONS),
+        ADVISOR_MODEL_ID: ADVISOR_MODEL_ID,
+      },
+      // API Gateway cuts the request at 29 s; the agent's own deadline is 26 s (REQUEST_BUDGET_S).
+      timeout: cdk.Duration.seconds(30),
       memorySize: 512,
     });
 
     accountsTable.grantReadData(advisorFn);
     entriesTable.grantReadData(advisorFn);
     linesTable.grantReadData(advisorFn);
+    // Converse is authorized by bedrock:InvokeModel. '*' covers the cross-region inference
+    // profile (and the foundation models it routes to) plus Titan for query embeddings.
     advisorFn.addToRolePolicy(new iam.PolicyStatement({
       actions: ['bedrock:InvokeModel'],
       resources: ['*'],
+    }));
+    // QueryVectors with a metadata filter / returnMetadata also requires GetVectors.
+    advisorFn.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['s3vectors:QueryVectors', 's3vectors:GetVectors'],
+      resources: [vectorIndex.attrIndexArn],
     }));
     advisorFn.addToRolePolicy(new iam.PolicyStatement({
       actions: ['aws-marketplace:ViewSubscriptions', 'aws-marketplace:Subscribe', 'aws-marketplace:Unsubscribe'],

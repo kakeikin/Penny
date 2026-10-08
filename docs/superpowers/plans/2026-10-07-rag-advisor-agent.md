@@ -4,7 +4,7 @@
 >
 > **Git rule for this repo:** the user performs ALL git operations, deploys, and AWS commands. Agents never run `git` or `cdk deploy`. Each "Commit" step lists the commands for the user to run.
 
-**Goal:** Replace the advisor's "dump 100 transactions into the prompt" call with a Bedrock Converse tool-use agent. The agent answers from three typed, read-only tools, cites every number it states, and has its citations checked deterministically before the answer is returned. It runs on Claude Haiku 5.5, so a typical question costs well under /bin/zsh.001.
+**Goal:** Replace the advisor's "dump 100 transactions into the prompt" call with a Bedrock Converse tool-use agent. The agent answers from three typed, read-only tools, cites every number it states, and has its citations checked deterministically before the answer is returned. It runs on Claude Haiku 4.5 (Haiku 5.5 once enabled), so a typical question costs about a cent or less.
 
 **Architecture:** `lambda/advisor/index.py` drives the loop:
 1. Converse call (`toolChoice: auto`, at most 4 tool rounds, 22 s time budget).
@@ -1177,7 +1177,7 @@ describe('Advisor agent', () => {
     const env = fn.Properties.Environment.Variables;
     expect(env.VECTOR_INDEX).toBe('penny-docs-v1');
     expect(env.EMBED_DIMENSIONS).toBe('512');
-    expect(env.ADVISOR_MODEL_ID).toBe('us.anthropic.claude-haiku-5-5');
+    expect(env.ADVISOR_MODEL_ID).toBe('us.anthropic.claude-haiku-4-5-20251001-v1:0');
     expect(env.VECTOR_BUCKET).toEqual({ 'Fn::Join': ['', ['penny-vectors-', { Ref: 'AWS::AccountId' }]] });
     expect(fn.Properties.Timeout).toBeLessThanOrEqual(30);
   });
@@ -1209,9 +1209,9 @@ Expected: 2 failures (no `ADVISOR_MODEL_ID` env var, no `QueryVectors` statement
      // metadata config: bump the suffix (-v2) and run scripts/backfill_index.py --force.
      const VECTOR_INDEX_NAME = 'penny-docs-v1';
      const EMBED_DIMENSIONS = 512;   // passed to IndexLambda so code and index can't disagree
-+    // Bedrock cross-region inference profile for the advisor agent (verify with
-+    // `aws bedrock list-inference-profiles` before changing).
-+    const ADVISOR_MODEL_ID = 'us.anthropic.claude-haiku-5-5';
++    // Bedrock cross-region inference profile for the advisor agent. Haiku 5.5 is listed but not
++    // yet enabled for this account; switch here once it is (verify with a test Converse call).
++    const ADVISOR_MODEL_ID = 'us.anthropic.claude-haiku-4-5-20251001-v1:0';
      const EMBED_MODEL_ARN = `arn:aws:bedrock:${cdk.Aws.REGION}::foundation-model/amazon.titan-embed-text-v2:0`;
  
      // Vectors are derived data (rebuildable from text/ in the retained AppBucket), so the
@@ -1228,7 +1228,7 @@ Expected: 2 failures (no `ADVISOR_MODEL_ID` env var, no `QueryVectors` statement
 +        EMBED_DIMENSIONS: String(EMBED_DIMENSIONS),
 +        ADVISOR_MODEL_ID: ADVISOR_MODEL_ID,
 +      },
-+      // API Gateway cuts the request at 29 s; the agent stops starting new tool rounds at 22 s.
++      // API Gateway cuts the request at 29 s; the agent's own deadline is 26 s (REQUEST_BUDGET_S).
 +      timeout: cdk.Duration.seconds(30),
        memorySize: 512,
      });
@@ -1258,6 +1258,8 @@ Expected: 2 failures (no `ADVISOR_MODEL_ID` env var, no `QueryVectors` statement
 Run: `npx tsc --noEmit -p .` and expect no output.
 Run: `npx jest` and expect `Tests: 20 passed, 20 total`.
 Run: `CI=true npx cdk synth --quiet` and expect exit 0.
+
+> **As implemented:** exactly as above, with the model constant set to Haiku 4.5 (Task 1 found Haiku 5.5 not invocable on this account). Verification: jest went from 2 failing to 20 passed, tsc was clean, `CI=true cdk synth` exited 0, and pytest showed 303 passed.
 
 - [ ] **Step 5: Commit (user)**
 
@@ -1290,7 +1292,7 @@ Expected:
 - `citations[0].type` is `transaction` or `summary`;
 - `evidenceStatus` is `supported`;
 - `invalidCitations` is 0;
-- `usage.estCostUsd` is well under `0.001`.
+- `usage.estCostUsd` is about `0.01` or less (Haiku 4.5 is $1 / $5 per MTok; Haiku 5.5 would be roughly 10x cheaper).
 
 - [ ] **Step 3: Document retrieval**
 
@@ -1317,7 +1319,7 @@ Expected: JSON lines with `rounds`, `toolsUsed`, `inputTokens`, `outputTokens` a
   |---|---|
   | Converse tool use | Task 4 |
   | Max 4 rounds plus `truncated` | Task 4, `run_agent` |
-  | Time budget under the 29 s limit | Task 4 (22 s budget, 20 s read timeout); Task 5 (30 s Lambda timeout) |
+  | Time budget under the 29 s limit | Task 4 (26 s deadline, 12 s Converse read timeout, per-call `require`); Task 5 (30 s Lambda timeout) |
   | Three typed read-only tools with refs `D/S/T` | Task 4 |
   | Decimal money as strings | Task 2 `ledger`; Task 4 |
   | Citation validator (invalid refs removed and counted, money detection, `evidenceStatus`) | Task 2 `citations` |

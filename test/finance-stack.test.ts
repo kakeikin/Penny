@@ -162,3 +162,31 @@ describe('RAG resources', () => {
     expect(JSON.stringify(methods[0].Properties.Integration.Uri)).toContain(fnLogicalId('QueryLambda'));
   });
 });
+
+describe('Advisor agent', () => {
+  const fnId = (prefix: string) =>
+    Object.keys(template.findResources('AWS::Lambda::Function')).find(id => id.startsWith(prefix))!;
+
+  test('AdvisorLambda is wired to the vector index and model, within the API Gateway limit', () => {
+    const fn = template.findResources('AWS::Lambda::Function')[fnId('AdvisorLambda')];
+    const env = fn.Properties.Environment.Variables;
+    expect(env.VECTOR_INDEX).toBe('penny-docs-v1');
+    expect(env.EMBED_DIMENSIONS).toBe('512');
+    expect(env.ADVISOR_MODEL_ID).toBe('us.anthropic.claude-haiku-4-5-20251001-v1:0');
+    expect(env.VECTOR_BUCKET).toEqual({ 'Fn::Join': ['', ['penny-vectors-', { Ref: 'AWS::AccountId' }]] });
+    expect(fn.Properties.Timeout).toBeLessThanOrEqual(30);
+  });
+
+  test('AdvisorLambda can query (not write) the vector index', () => {
+    const roleRef = template.findResources('AWS::Lambda::Function')[fnId('AdvisorLambda')].Properties.Role['Fn::GetAtt'][0];
+    const statements = Object.values(template.findResources('AWS::IAM::Policy'))
+      .filter((p: any) => p.Properties.Roles.some((r: any) => r.Ref === roleRef))
+      .flatMap((p: any) => p.Properties.PolicyDocument.Statement);
+    const actions = statements.flatMap((st: any) => ([] as string[]).concat(st.Action));
+    const vectorSt = statements.find((st: any) => ([] as string[]).concat(st.Action).includes('s3vectors:QueryVectors'));
+    expect(([] as string[]).concat(vectorSt.Action).sort()).toEqual(['s3vectors:GetVectors', 's3vectors:QueryVectors']);
+    expect(vectorSt.Resource).toEqual({ 'Fn::GetAtt': [expect.stringMatching(/^DocsVectorIndex/), 'IndexArn'] });
+    expect(actions).not.toContain('s3vectors:PutVectors');
+    expect(actions).not.toContain('s3vectors:DeleteVectors');
+  });
+});
