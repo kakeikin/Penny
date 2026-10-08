@@ -1,6 +1,7 @@
 import boto3
 from boto3.dynamodb.conditions import Attr
 from botocore.config import Config
+from botocore.exceptions import BotoCoreError, ClientError
 import json
 import os
 import base64
@@ -11,6 +12,7 @@ from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from urllib.parse import unquote_plus
 
+from penny_common.fx import BASE, FxError, normalize_currency, parse_rates, to_base
 from penny_common.masking import mask_identifiers
 from penny_common.pdftext import PdfTextError, extract_pdf_pages
 from penny_common.session import valid_session_id
@@ -28,6 +30,7 @@ ACCOUNTS_TABLE = os.environ.get('ACCOUNTS_TABLE', 'finance-accounts')
 ENTRIES_TABLE  = os.environ.get('ENTRIES_TABLE', 'finance-journal-entries')
 LINES_TABLE    = os.environ.get('LINES_TABLE', 'finance-journal-lines')
 APP_BUCKET     = os.environ.get('APP_BUCKET', '')
+EXCHANGE_RATES_TABLE = os.environ.get('EXCHANGE_RATES_TABLE', 'finance-exchange-rates')
 
 MODEL_ID            = 'us.anthropic.claude-sonnet-4-6'
 MAX_OUTPUT_TOKENS   = 12000
@@ -35,6 +38,8 @@ MAX_EVIDENCE_CHARS  = 500
 
 _DIGITS     = re.compile(r'[0-9]+')
 _ISO_DAY    = re.compile(r'\d{4}-\d{2}-\d{2}')
+_ISO_CURRENCY = re.compile(r'[A-Z]{3}')
+MAX_AMOUNT  = Decimal('1000000000000')     # 1e12: anything larger is a parse error, not a transaction
 DIRECTIONS  = ('DEBIT', 'CREDIT')
 
 
@@ -42,14 +47,18 @@ def compute_md5(data: bytes) -> str:
     return hashlib.md5(data).hexdigest()
 
 
-def compute_entry_hash(entry: dict) -> str:
-    """Hash based on date + total amount + first 30 chars of description."""
+def compute_entry_hash(entry: dict, currency: str = BASE) -> str:
+    """Hash based on date + total amount + first 30 chars of description.
+
+    Non-USD entries hash their printed total plus the currency code, so the same receipt
+    matches itself on another day even after the exchange rate has changed.
+    """
     date = entry.get('date', '')
     desc = entry.get('description', '')[:30].strip().lower()
     # Sum all debit amounts as the canonical amount
     # Stable with the pre-Decimal float hashes for amounts with <= 2 decimals.
     total = sum(Decimal(str(l['amount'])) for l in entry.get('lines', []) if l['direction'] == 'DEBIT')
-    raw = f"{date}|{total:.2f}|{desc}"
+    raw = f"{date}|{total:.2f}|{desc}" if currency == BASE else f"{date}|{currency}|{total:.2f}|{desc}"
     return hashlib.md5(raw.encode()).hexdigest()
 
 
@@ -86,6 +95,40 @@ def load_claude_json(raw: str) -> dict:
     return parsed
 
 
+def load_rates() -> dict:
+    """Latest USD-based rates from ExchangeRateLambda's table; {} if unavailable."""
+    try:
+        item = dynamodb.Table(EXCHANGE_RATES_TABLE).get_item(Key={'base': BASE}).get('Item')
+    except (BotoCoreError, ClientError) as e:
+        print(json.dumps({'event': 'fx_rates_unavailable', 'errorType': type(e).__name__}))
+        return {}
+    return parse_rates(item)
+
+
+def printed_currency(entry: dict) -> str:
+    """The entry's currency as printed: a supported ISO code, a sanitized unsupported one
+    (e.g. 'HKD'), 'XXX' for anything unreadable, or BASE if the model reported none."""
+    try:
+        return normalize_currency(entry.get('currency')) or BASE
+    except FxError:
+        raw = entry.get('currency')
+        code = raw.strip().upper() if isinstance(raw, str) else ''
+        return code if _ISO_CURRENCY.fullmatch(code) else 'XXX'
+
+
+def convert_to_base(entry: dict, currency: str, rates_cache: dict) -> bool:
+    """Convert entry['lines'] to USD in place. False if the amounts had to stay as printed."""
+    if currency == BASE:
+        return True
+    try:
+        if 'rates' not in rates_cache:
+            rates_cache['rates'] = load_rates()
+        entry['lines'] = to_base(entry['lines'], currency, rates_cache['rates'])
+    except FxError:
+        return False
+    return True
+
+
 def get_accounts() -> list:
     table = dynamodb.Table(ACCOUNTS_TABLE)
     result = table.scan()
@@ -112,6 +155,7 @@ Accounts must be selected from the following list:
 For each transaction, produce one journal entry with balanced debit and credit lines.
 Every amount must be a number with exactly 2 decimal places, and debits must equal credits exactly.
 If classification is uncertain, add a note.
+Set "currency" on each entry to the ISO 4217 code of its amounts as printed (e.g. "USD", "CNY"). Copy amounts exactly as printed; never convert them.
 For each entry, set "evidence" to {{"page": <1-based integer>, "text": <one string: the exact source line(s) copied verbatim, multiple lines joined with \\n>}}. Do not paraphrase or reformat; omit "evidence" if there is no exact source line.
 {build_transcribe_instruction(transcribe_pages)}
 
@@ -121,6 +165,7 @@ Output ONLY valid JSON, no explanation:
     {{
       "date": "YYYY-MM-DD",
       "description": "...",
+      "currency": "USD",
       "lines": [
         {{ "accountId": "...", "direction": "DEBIT", "amount": 0.00, "note": "..." }},
         {{ "accountId": "...", "direction": "CREDIT", "amount": 0.00, "note": "..." }}
@@ -279,8 +324,8 @@ def normalize_entry(entry):
             amount = Decimal(str(line.get('amount')))
         except InvalidOperation:
             return None
-        if not amount.is_finite():
-            return None
+        if not amount.is_finite() or amount < 0 or amount >= MAX_AMOUNT:
+            return None             # direction carries the sign; amounts are never negative
         note = line.get('note', '')
         clean.append({'accountId': account, 'direction': direction, 'amount': amount,
                       'note': note if isinstance(note, str) else ''})
@@ -297,6 +342,7 @@ def save_pending_entries(entries: list, file_key: str, file_hash: str, source: s
     lines_table   = dynamodb.Table(LINES_TABLE)
     saved = []
     prepared = []
+    rates_cache = {}    # exchange rates are read at most once per document, and only if needed
 
     # Pass 1: validate and build every item before writing anything. If a malformed entry
     # raised mid-write, the retry would see the file as a duplicate and the rest would be lost.
@@ -309,10 +355,16 @@ def save_pending_entries(entries: list, file_key: str, file_hash: str, source: s
             # No amounts or dates in logs: transaction data stays out of CloudWatch.
             print(json.dumps({'event': 'entry_unbalanced_skipped', 'docId': doc_id or file_hash}))
             continue
+        if not entry.get('currency'):
+            print(json.dumps({'event': 'currency_missing_assumed_usd', 'docId': doc_id or file_hash}))
+        currency   = printed_currency(entry)
+        entry_hash = compute_entry_hash(entry, currency)      # printed amounts: rate-independent
+        converted  = convert_to_base(entry, currency, rates_cache)
+        if not converted:
+            print(json.dumps({'event': 'fx_unconverted', 'docId': doc_id or file_hash}))
 
         entry_id   = str(uuid.uuid4())
         date       = entry['date']
-        entry_hash = compute_entry_hash(entry)
         status     = 'DUPLICATE_SUSPECT' if is_duplicate_entry(entry_hash, session_id) else 'PENDING'
 
         item = {
@@ -329,6 +381,11 @@ def save_pending_entries(entries: list, file_key: str, file_hash: str, source: s
         }
         if session_id:
             item['sessionId'] = session_id
+        if not converted:
+            # Amounts are as printed, not USD: the Upload page warns and ConfirmLambda requires
+            # an explicit acknowledgement before booking them.
+            item['fxStatus'] = 'unconverted'
+            item['printedCurrency'] = currency
         evidence = []
         if source_type:
             try:
@@ -346,14 +403,19 @@ def save_pending_entries(entries: list, file_key: str, file_hash: str, source: s
     for item, lines in prepared:
         entries_table.put_item(Item=item)
         for i, line in enumerate(lines):
-            lines_table.put_item(Item={
+            line_item = {
                 'entryId':   item['entryId'],
                 'lineId':    f'{i:03d}',
                 'accountId': line['accountId'],
                 'direction': line['direction'],
                 'amount':    str(line['amount']),
                 'note':      line['note'],
-            })
+            }
+            if 'originalCurrency' in line:      # same fields ManualEntryLambda writes
+                line_item['originalCurrency'] = line['originalCurrency']
+                line_item['originalAmount']   = str(line['originalAmount'])
+                line_item['exchangeRate']     = str(line['exchangeRate'])
+            lines_table.put_item(Item=line_item)
     return saved
 
 

@@ -190,3 +190,18 @@ describe('Advisor agent', () => {
     expect(actions).not.toContain('s3vectors:DeleteVectors');
   });
 });
+
+describe('Base currency', () => {
+  test('ParseLambda can only GetItem on the exchange-rates table', () => {
+    const fnId = Object.keys(template.findResources('AWS::Lambda::Function')).find(id => id.startsWith('ParseLambda'))!;
+    const roleRef = template.findResources('AWS::Lambda::Function')[fnId].Properties.Role['Fn::GetAtt'][0];
+    const tableId = Object.entries(template.findResources('AWS::DynamoDB::Table'))
+      .find(([, t]: [string, any]) => t.Properties.TableName === 'finance-exchange-rates')![0];
+    const statements = Object.values(template.findResources('AWS::IAM::Policy'))
+      .filter((p: any) => p.Properties.Roles.some((r: any) => r.Ref === roleRef))
+      .flatMap((p: any) => p.Properties.PolicyDocument.Statement);
+    const onRates = statements.filter((st: any) => JSON.stringify(st.Resource).includes(tableId));
+    const actions = onRates.flatMap((st: any) => ([] as string[]).concat(st.Action));
+    expect(actions).toEqual(['dynamodb:GetItem']);
+  });
+});

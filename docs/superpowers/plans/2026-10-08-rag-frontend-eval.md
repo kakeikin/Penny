@@ -24,9 +24,16 @@
   - Account creation defaults to `USD`.
   - The foreign-currency pickers offer CNY/EUR/GBP/JPY/HKD/CAD/AUD.
   - ParseLambda converts CNY/EUR/JPY/GBP at the stored rate, which is in units per USD: `usd = original / rate`, rounded half-up to cents.
-  - Rounding drift is moved onto the largest line of the short side, so debits always equal credits.
+  - The entry total is converted once. Each side's rounding drift goes onto that side's largest line, so both sides equal the converted total exactly, with no upward bias.
   - Lines keep `originalCurrency`, `originalAmount` and `exchangeRate`, the same fields ManualEntryLambda writes.
-  - An unsupported currency, a missing rate or a rates-table error books the amounts as printed and sets `fxStatus: "unconverted"`. The Upload page then shows a review warning.
+  - An unsupported currency, a missing, malformed or stale (older than 14 days) rate, a rates-table error, or an amount that can't be converted books the amounts as printed. The entry gets `fxStatus: "unconverted"` and `printedCurrency`. The Upload page warns, and ConfirmLambda answers 409 unless the user explicitly acknowledges it.
+  - `entryHash` for non-USD entries uses the printed total plus the currency code. The same receipt therefore matches itself after a rate change, and HKD 72.50 never collides with USD 72.50. The USD hash format is unchanged.
+  - ParseLambda now rejects negative amounts (direction carries the sign) and amounts of 1e12 or more, skipping only that entry.
+  - Known limitation: every entry converts at the latest stored rate, not the rate on its transaction date.
+- **ConfirmLambda integrity (found in Task 1 review).**
+  - Client-supplied `lines` used to replace the stored lines **without any balance check**, and the stored-line check used a float tolerance. Client lines are now validated (Decimal, at least 2 lines, valid directions, amounts from 0 up to 1e12) and must balance exactly before anything is written.
+  - The original-currency fields are kept when lines are rewritten.
+  - A session can only confirm its own entries; otherwise it gets 404.
 - **Lean eval** instead of the spec's full §9:
   - 3 synthetic statements, 2 synthetic receipts and 20 questions.
   - Metrics: tool selection, numeric exactness, citation validity, supported rate, cost, p50/p95 latency, retrieval hit@3/hit@5/MRR, and evidence-linking accuracy.
@@ -45,7 +52,8 @@
 | `lambda/common/penny_common/fx.py` | 1 | currency normalization, rate parsing, balanced conversion to USD |
 | `lambda/parse/index.py` | 1 | ask for `currency`, convert before hashing and booking, write original-currency fields |
 | `lambda/manual-entry/index.py` | 1 | new accounts default to USD |
-| `lib/finance-stack.ts` | 1 | ParseLambda reads the exchange-rates table |
+| `lambda/confirm/index.py` | 1 | validate and balance-check client lines, keep FX fields, session check, unconverted 409 |
+| `lib/finance-stack.ts` | 1 | ParseLambda may `dynamodb:GetItem` the exchange-rates table (nothing else) |
 | `frontend/format.js` | 2 | `Money.fmt` / `Money.symbol` |
 | `frontend/pages/*.js`, `frontend/index*.html` | 2–4 | use `Money`, chips, viewer, polling |
 | `frontend/citations.js` | 3 | pure: escape, chips, citation and evidence HTML |
@@ -60,25 +68,28 @@
 
 ---
 
-### Task 1: Base currency USD — backend
+### Task 1: Base currency USD — backend, and confirm integrity
 
 **Files:**
 - Create: `lambda/common/penny_common/fx.py`, `test/lambda/test_penny_fx.py`, `test/lambda/test_parse_currency.py`
-- Modify: `lambda/parse/index.py`, `lambda/manual-entry/index.py`, `lib/finance-stack.ts`, `test/finance-stack.test.ts`
+- Modify: `lambda/parse/index.py`, `lambda/manual-entry/index.py`, `lambda/confirm/index.py`, `lib/finance-stack.ts`, `test/finance-stack.test.ts`, `test/lambda/test_confirm.py`
 
 - [ ] **Step 1: Write the failing tests.**
 
 Create `test/lambda/test_penny_fx.py`:
 
 ````python
-from decimal import Decimal
+import random
+from datetime import datetime, timedelta, timezone
+from decimal import ROUND_HALF_UP, Decimal
 
 import pytest
 
-from penny_common.fx import FxError, normalize_currency, parse_rates, to_base
+from penny_common.fx import CENT, FxError, normalize_currency, parse_rates, to_base
 
 D = Decimal
 RATES = {'CNY': D('7.25'), 'JPY': D('150.3'), 'EUR': D('0.92')}
+NOW = datetime(2026, 10, 8, tzinfo=timezone.utc)
 
 
 def _line(direction, amount, account='a'):
@@ -89,6 +100,10 @@ def _sides(lines):
     debit = sum(l['amount'] for l in lines if l['direction'] == 'DEBIT')
     credit = sum(l['amount'] for l in lines if l['direction'] == 'CREDIT')
     return debit, credit
+
+
+def _item(rates, age=timedelta(days=1)):
+    return {'base': 'USD', 'rates': rates, 'updatedAt': (NOW - age).isoformat()}
 
 
 @pytest.mark.parametrize('raw,code', [(None, None), ('', None), ('  ', None), ('usd', 'USD'),
@@ -104,10 +119,20 @@ def test_normalize_currency_rejects_unsupported(raw):
 
 
 def test_parse_rates_drops_bad_values():
-    item = {'base': 'USD', 'rates': {'CNY': '7.25', 'JPY': 'abc', 'EUR': '0', 'GBP': '-1', 'USD': '1'}}
-    assert parse_rates(item) == {'CNY': D('7.25'), 'USD': D('1')}
-    assert parse_rates(None) == {}
-    assert parse_rates({'rates': None}) == {}
+    item = _item({'CNY': '7.25', 'JPY': 'abc', 'EUR': '0', 'GBP': '-1', 'USD': '1'})
+    assert parse_rates(item, NOW) == {'CNY': D('7.25'), 'USD': D('1')}
+
+
+@pytest.mark.parametrize('item', [None, [], {'rates': None}, {'rates': ['CNY']},
+                                  {'rates': {'CNY': '7.25'}},                       # no updatedAt
+                                  {'rates': {'CNY': '7.25'}, 'updatedAt': 'yesterday'}])
+def test_parse_rates_rejects_malformed_items(item):
+    assert parse_rates(item, NOW) == {}
+
+
+def test_parse_rates_rejects_stale_rates():
+    assert parse_rates(_item({'CNY': '7.25'}, age=timedelta(days=13)), NOW) == {'CNY': D('7.25')}
+    assert parse_rates(_item({'CNY': '7.25'}, age=timedelta(days=15)), NOW) == {}
 
 
 def test_usd_lines_are_copied_unchanged():
@@ -125,22 +150,50 @@ def test_cny_converts_and_keeps_original():
     assert out[0]['exchangeRate'] == D('7.25')
 
 
-def test_rounding_that_already_balances_is_left_alone():
-    lines = [_line('DEBIT', '10.00', 'x'), _line('DEBIT', '10.00', 'y'), _line('DEBIT', '10.00', 'z'),
-             _line('CREDIT', '30.00', 'card')]
-    out = to_base(lines, 'CNY', RATES)
-    debit, credit = _sides(out)
-    assert debit == credit
-    assert [l['amount'] for l in out[:3]] == [D('1.38')] * 3          # 10 / 7.25 = 1.3793 -> 1.38
-    assert out[3]['amount'] == D('4.14')                              # 4.1379 -> 4.14, already equal
+def test_eur_rate_below_one_converts_upward():
+    out = to_base([_line('DEBIT', '9.20'), _line('CREDIT', '9.20')], 'EUR', RATES)
+    assert [l['amount'] for l in out] == [D('10.00'), D('10.00')]
 
 
-def test_rounding_drift_is_absorbed_exactly():
-    lines = [_line('DEBIT', '1.00', 'x'), _line('DEBIT', '1.00', 'y'), _line('DEBIT', '1.00', 'z'),
-             _line('CREDIT', '3.00', 'card')]
-    out = to_base(lines, 'JPY', RATES)                                # 1/150.3 = 0.0067 -> 0.01 each
-    assert _sides(out) == (D('0.03'), D('0.03'))
-    assert out[3]['amount'] == D('0.03')                              # 3/150.3 = 0.02 -> +0.01 adjustment
+def test_total_is_the_converted_total_not_the_larger_rounded_side():
+    # 1/150.3 rounds to 0.01 per line, but the true total 3/150.3 = 0.02.
+    lines = [_line('DEBIT', '3', 'x'), _line('CREDIT', '1', 'a'), _line('CREDIT', '1', 'b'), _line('CREDIT', '1', 'c')]
+    out = to_base(lines, 'JPY', RATES)
+    assert _sides(out) == (D('0.02'), D('0.02'))
+    assert all(l['amount'] >= 0 for l in out)
+
+
+def test_random_entries_balance_at_the_exact_converted_total():
+    rng = random.Random(7)
+    for _ in range(2000):
+        currency = rng.choice(['CNY', 'JPY', 'EUR'])
+        debits = [D(rng.randint(1, 50000)) / 100 for _ in range(rng.randint(1, 8))]
+        lines = [_line('DEBIT', str(a), f'd{i}') for i, a in enumerate(debits)]
+        lines.append(_line('CREDIT', str(sum(debits)), 'card'))
+        out = to_base(lines, currency, RATES)
+        target = (sum(debits) / RATES[currency]).quantize(CENT, rounding=ROUND_HALF_UP)
+        assert _sides(out) == (target, target)
+        assert all(l['amount'] >= 0 for l in out)
+
+
+def test_more_than_two_decimals_is_rounded_half_up():
+    out = to_base([_line('DEBIT', '0.3625'), _line('CREDIT', '0.3625')], 'CNY', RATES)   # 0.05
+    assert [l['amount'] for l in out] == [D('0.05'), D('0.05')]
+
+
+def test_zero_line_stays_zero_without_breaking_balance():
+    out = to_base([_line('DEBIT', '72.50'), _line('DEBIT', '0', 'tax'), _line('CREDIT', '72.50')], 'CNY', RATES)
+    assert [l['amount'] for l in out] == [D('10.00'), D('0.00'), D('10.00')]
+
+
+def test_unbalanced_printed_amounts_are_rejected():
+    with pytest.raises(FxError):
+        to_base([_line('DEBIT', '72.50'), _line('CREDIT', '72.49')], 'CNY', RATES)
+
+
+def test_huge_amount_raises_fx_error_not_invalid_operation():
+    with pytest.raises(FxError):
+        to_base([_line('DEBIT', '1e30'), _line('CREDIT', '1e30')], 'CNY', RATES)
 
 
 def test_missing_rate_raises():
@@ -151,6 +204,7 @@ def test_missing_rate_raises():
 Create `test/lambda/test_parse_currency.py`:
 
 ````python
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from unittest.mock import MagicMock
 
@@ -160,13 +214,17 @@ from botocore.exceptions import ClientError
 D = Decimal
 
 
+def _rates_item(age=timedelta(days=1)):
+    return {'Item': {'base': 'USD', 'rates': {'CNY': '7.25', 'USD': '1'},
+                     'updatedAt': (datetime.now(timezone.utc) - age).isoformat()}}
+
+
 @pytest.fixture
 def parse(lambda_module, monkeypatch):
     index = lambda_module('parse')
     tables = {name: MagicMock(name=name) for name in
               (index.ENTRIES_TABLE, index.LINES_TABLE, index.EXCHANGE_RATES_TABLE)}
-    tables[index.EXCHANGE_RATES_TABLE].get_item.return_value = {
-        'Item': {'base': 'USD', 'rates': {'CNY': '7.25', 'USD': '1'}}}
+    tables[index.EXCHANGE_RATES_TABLE].get_item.return_value = _rates_item()
     db = MagicMock()
     db.Table.side_effect = lambda name: tables[name]
     monkeypatch.setattr(index, 'dynamodb', db)
@@ -212,6 +270,12 @@ def test_usd_or_unreported_currency_is_stored_as_is(parse, currency):
     parse.tables[parse.EXCHANGE_RATES_TABLE].get_item.assert_not_called()    # USD needs no rates
 
 
+def test_missing_currency_is_logged_without_data(parse, capsys):
+    parse.save_pending_entries([_entry(None, '120.00')], 'uploads/k.pdf', 'h', 'PDF')
+    out = capsys.readouterr().out
+    assert 'currency_missing_assumed_usd' in out and '120.00' not in out
+
+
 def test_cny_entry_is_converted_and_keeps_original(parse):
     parse.save_pending_entries([_entry('CNY')], 'uploads/k.pdf', 'h', 'PDF')
     entries, lines = _written(parse)
@@ -219,13 +283,21 @@ def test_cny_entry_is_converted_and_keeps_original(parse):
     assert lines[0]['originalCurrency'] == 'CNY'
     assert lines[0]['originalAmount'] == '72.50'
     assert lines[0]['exchangeRate'] == '7.25'
-    assert 'fxStatus' not in entries[0]
+    assert 'fxStatus' not in entries[0] and 'printedCurrency' not in entries[0]
 
 
-def test_entry_hash_uses_converted_amount(parse):
+def test_usd_entry_hash_format_is_unchanged(parse):
+    parse.save_pending_entries([_entry('USD', '10.00')], 'uploads/k.pdf', 'h', 'PDF')
+    entries, _ = _written(parse)
+    assert entries[0]['entryHash'] == parse.compute_entry_hash(_entry(None, '10.00'))
+
+
+def test_foreign_entry_hash_uses_printed_amount_and_currency(parse):
     parse.save_pending_entries([_entry('CNY')], 'uploads/k.pdf', 'h', 'PDF')
     entries, _ = _written(parse)
-    assert entries[0]['entryHash'] == parse.compute_entry_hash(_entry('USD', '10.00'))
+    assert entries[0]['entryHash'] == parse.compute_entry_hash(_entry(None), 'CNY')
+    assert entries[0]['entryHash'] != parse.compute_entry_hash(_entry(None, '10.00'))   # rate-independent
+    assert entries[0]['entryHash'] != parse.compute_entry_hash(_entry(None))             # not a USD 72.50
 
 
 def test_rates_are_read_once_per_document(parse):
@@ -233,23 +305,147 @@ def test_rates_are_read_once_per_document(parse):
     assert parse.tables[parse.EXCHANGE_RATES_TABLE].get_item.call_count == 1
 
 
-@pytest.mark.parametrize('currency', ['HKD', 'JPY'])   # unsupported / no stored rate
-def test_unconvertible_entry_is_booked_as_printed_and_flagged(parse, currency, capsys):
+@pytest.mark.parametrize('currency,printed', [('HKD', 'HKD'), ('JPY', 'JPY'), ('dollars', 'XXX'), (12, 'XXX')])
+def test_unconvertible_entry_is_booked_as_printed_and_flagged(parse, currency, printed, capsys):
     parse.save_pending_entries([_entry(currency)], 'uploads/k.pdf', 'h', 'PDF')
     entries, lines = _written(parse)
     assert entries[0]['fxStatus'] == 'unconverted'
+    assert entries[0]['printedCurrency'] == printed
     assert [l['amount'] for l in lines] == ['72.50', '72.50']
+    assert all('originalCurrency' not in l for l in lines)
     out = capsys.readouterr().out
-    assert 'fx_unconverted' in out and '72.50' not in out
+    assert 'fx_unconverted' in out and '72.50' not in out and 'HKD' not in out
 
 
-def test_rates_table_failure_leaves_entry_unconverted(parse, capsys):
+def test_rates_table_failure_leaves_entries_unconverted_and_is_read_once(parse, capsys):
     parse.tables[parse.EXCHANGE_RATES_TABLE].get_item.side_effect = ClientError(
         {'Error': {'Code': 'ProvisionedThroughputExceededException', 'Message': 'x'}}, 'GetItem')
+    parse.save_pending_entries([_entry('CNY'), _entry('CNY', '14.50')], 'uploads/k.pdf', 'h', 'PDF')
+    entries, _ = _written(parse)
+    assert [e['fxStatus'] for e in entries] == ['unconverted', 'unconverted']
+    assert parse.tables[parse.EXCHANGE_RATES_TABLE].get_item.call_count == 1
+    assert 'fx_rates_unavailable' in capsys.readouterr().out
+
+
+def test_stale_rates_leave_entry_unconverted(parse):
+    parse.tables[parse.EXCHANGE_RATES_TABLE].get_item.return_value = _rates_item(age=timedelta(days=30))
     parse.save_pending_entries([_entry('CNY')], 'uploads/k.pdf', 'h', 'PDF')
     entries, _ = _written(parse)
     assert entries[0]['fxStatus'] == 'unconverted'
-    assert 'fx_rates_unavailable' in capsys.readouterr().out
+
+
+@pytest.mark.parametrize('amount', ['-5.00', '1000000000000', '1e30'])
+def test_negative_or_absurd_amounts_skip_only_that_entry(parse, amount, capsys):
+    parse.save_pending_entries([_entry('CNY', amount), _entry('CNY')], 'uploads/k.pdf', 'h', 'PDF')
+    entries, lines = _written(parse)
+    assert len(entries) == 1 and [l['amount'] for l in lines] == ['10.00', '10.00']
+    assert 'entry_invalid_skipped' in capsys.readouterr().out
+````
+
+Append the confirm tests:
+
+Apply to `test/lambda/test_confirm.py`:
+
+````diff
+--- a/test/lambda/test_confirm.py
++++ b/test/lambda/test_confirm.py
+@@ -61,3 +61,96 @@
+         event = {'pathParameters': {'id': 'e1'}, 'httpMethod': 'PUT', 'body': None}
+         resp = handler(event, {})
+     assert resp['statusCode'] == 400
++
++
++BALANCED = [{'lineId': '000', 'accountId': 'dining', 'direction': 'DEBIT', 'amount': '10.00'},
++            {'lineId': '001', 'accountId': 'card', 'direction': 'CREDIT', 'amount': '10.00'}]
++
++
++def _confirm(entry, body=None, headers=None, stored=BALANCED):
++    from index import handler
++    entries, lines = MagicMock(), MagicMock()
++    entries.get_item.return_value = {'Item': entry} if entry else {}
++    lines.query.return_value = {'Items': stored}
++    with patch('index.dynamodb') as mock_db:
++        mock_db.Table.side_effect = lambda name: {'finance-journal-entries': entries,
++                                                  'finance-journal-lines': lines}[name]
++        event = {'pathParameters': {'id': 'e1'}, 'httpMethod': 'PUT', 'headers': headers,
++                 'body': json.dumps(body) if body is not None else None}
++        resp = handler(event, {})
++    return resp, entries, lines
++
++
++def test_lines_balance_is_exact_decimal():
++    from index import lines_balance
++    assert lines_balance([{'direction': 'DEBIT', 'amount': '100.00'},
++                          {'direction': 'CREDIT', 'amount': '99.995'}]) is False
++
++
++def test_confirm_marks_entry_confirmed_and_clears_fx_status():
++    resp, entries, _ = _confirm({'entryId': 'e1', 'status': 'PENDING'})
++    assert resp['statusCode'] == 200
++    update = entries.update_item.call_args.kwargs
++    assert update['UpdateExpression'] == 'SET #s = :s REMOVE fxStatus'
++    assert update['ExpressionAttributeValues'] == {':s': 'CONFIRMED'}
++
++
++def test_client_lines_must_balance_before_they_replace_stored_lines():
++    body = {'lines': [{'accountId': 'dining', 'direction': 'DEBIT', 'amount': '100.00'},
++                      {'accountId': 'card', 'direction': 'CREDIT', 'amount': '50.00'}]}
++    resp, entries, lines = _confirm({'entryId': 'e1', 'status': 'PENDING'}, body)
++    assert resp['statusCode'] == 400
++    lines.put_item.assert_not_called()
++    lines.delete_item.assert_not_called()
++    entries.update_item.assert_not_called()
++
++
++@pytest.mark.parametrize('bad', [
++    'not a list',
++    [{'accountId': 'a', 'direction': 'DEBIT', 'amount': '1.00'}],                       # one line
++    [{'accountId': '', 'direction': 'DEBIT', 'amount': '1.00'}, {'accountId': 'b', 'direction': 'CREDIT', 'amount': '1.00'}],
++    [{'accountId': 'a', 'direction': 'UP', 'amount': '1.00'}, {'accountId': 'b', 'direction': 'CREDIT', 'amount': '1.00'}],
++    [{'accountId': 'a', 'direction': 'DEBIT', 'amount': 'abc'}, {'accountId': 'b', 'direction': 'CREDIT', 'amount': '1.00'}],
++    [{'accountId': 'a', 'direction': 'DEBIT', 'amount': '-1.00'}, {'accountId': 'b', 'direction': 'CREDIT', 'amount': '-1.00'}],
++])
++def test_malformed_client_lines_are_rejected(bad):
++    resp, _, lines = _confirm({'entryId': 'e1', 'status': 'PENDING'}, {'lines': bad})
++    assert resp['statusCode'] == 400
++    lines.put_item.assert_not_called()
++
++
++def test_client_lines_keep_original_currency_fields():
++    body = {'lines': [{'accountId': 'dining', 'direction': 'DEBIT', 'amount': '10.00', 'originalCurrency': 'CNY',
++                       'originalAmount': '72.50', 'exchangeRate': '7.25', 'entryId': 'x', 'lineId': '009'},
++                      {'accountId': 'card', 'direction': 'CREDIT', 'amount': '10.00'}]}
++    resp, _, lines = _confirm({'entryId': 'e1', 'status': 'PENDING'}, body)
++    assert resp['statusCode'] == 200
++    written = [c.kwargs['Item'] for c in lines.put_item.call_args_list]
++    assert written[0] == {'entryId': 'e1', 'lineId': '000', 'accountId': 'dining', 'direction': 'DEBIT',
++                          'amount': '10.00', 'note': '', 'originalCurrency': 'CNY', 'originalAmount': '72.50',
++                          'exchangeRate': '7.25'}
++    assert 'originalCurrency' not in written[1]
++
++
++def test_unconverted_entry_needs_explicit_acknowledgement():
++    entry = {'entryId': 'e1', 'status': 'PENDING', 'fxStatus': 'unconverted'}
++    resp, entries, _ = _confirm(entry)
++    assert resp['statusCode'] == 409
++    entries.update_item.assert_not_called()
++    resp, _, _ = _confirm(entry, {'acknowledgeUnconverted': True})
++    assert resp['statusCode'] == 200
++
++
++def test_sessions_can_only_confirm_their_own_entries():
++    assert _confirm({'entryId': 'e1', 'status': 'PENDING'}, headers={'X-Session-Id': 'demo1'})[0]['statusCode'] == 404
++    assert _confirm({'entryId': 'e1', 'status': 'PENDING', 'sessionId': 'demo1'})[0]['statusCode'] == 404
++    assert _confirm({'entryId': 'e1', 'status': 'PENDING', 'sessionId': 'demo1'},
++                    headers={'x-session-id': 'demo1'})[0]['statusCode'] == 200
++
++
++def test_missing_entry_and_bad_requests():
++    assert _confirm(None)[0]['statusCode'] == 404
++    assert _confirm({'entryId': 'e1'}, headers={'X-Session-Id': 'bad id!'})[0]['statusCode'] == 400
++    from index import handler
++    resp = handler({'pathParameters': {'id': 'e1'}, 'body': '[1, 2]'}, {})
++    assert resp['statusCode'] == 400
 ````
 
 Append the jest test:
@@ -259,13 +455,13 @@ Apply to `test/finance-stack.test.ts`:
 ````diff
 --- a/test/finance-stack.test.ts
 +++ b/test/finance-stack.test.ts
-@@ -190,3 +190,19 @@
+@@ -190,3 +190,18 @@
      expect(actions).not.toContain('s3vectors:DeleteVectors');
    });
  });
 +
 +describe('Base currency', () => {
-+  test('ParseLambda can read (not write) the exchange-rates table', () => {
++  test('ParseLambda can only GetItem on the exchange-rates table', () => {
 +    const fnId = Object.keys(template.findResources('AWS::Lambda::Function')).find(id => id.startsWith('ParseLambda'))!;
 +    const roleRef = template.findResources('AWS::Lambda::Function')[fnId].Properties.Role['Fn::GetAtt'][0];
 +    const tableId = Object.entries(template.findResources('AWS::DynamoDB::Table'))
@@ -275,8 +471,7 @@ Apply to `test/finance-stack.test.ts`:
 +      .flatMap((p: any) => p.Properties.PolicyDocument.Statement);
 +    const onRates = statements.filter((st: any) => JSON.stringify(st.Resource).includes(tableId));
 +    const actions = onRates.flatMap((st: any) => ([] as string[]).concat(st.Action));
-+    expect(actions).toContain('dynamodb:GetItem');
-+    expect(actions).not.toContain('dynamodb:PutItem');
++    expect(actions).toEqual(['dynamodb:GetItem']);
 +  });
 +});
 ````
@@ -286,8 +481,11 @@ Apply to `test/finance-stack.test.ts`:
 Run: `python -m pytest test/lambda/test_penny_fx.py test/lambda/test_parse_currency.py -q`
 Expected: collection error `ModuleNotFoundError: No module named 'penny_common.fx'`.
 
+Run: `python -m pytest test/lambda/test_confirm.py -q`
+Expected: several failures (no 409, client lines not balance-checked, no session check).
+
 Run: `npx jest`
-Expected: 1 failure, "ParseLambda can read (not write) the exchange-rates table".
+Expected: 1 failure, "ParseLambda can only GetItem on the exchange-rates table".
 
 - [ ] **Step 3: Implement.**
 
@@ -295,12 +493,14 @@ Create `lambda/common/penny_common/fx.py`:
 
 ````python
 """Convert parsed journal lines into the ledger's base currency (USD), keeping them balanced."""
+from datetime import datetime, timedelta, timezone
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 
 BASE = 'USD'
 SUPPORTED = ('USD', 'CNY', 'EUR', 'JPY', 'GBP')    # the currencies ExchangeRateLambda stores
 _ALIASES = {'RMB': 'CNY'}
 CENT = Decimal('0.01')
+MAX_RATE_AGE = timedelta(days=14)    # ExchangeRateLambda refreshes weekly; older means it is failing
 
 
 class FxError(ValueError):
@@ -315,14 +515,28 @@ def normalize_currency(value):
         raise FxError('currency must be a string')
     code = _ALIASES.get(value.strip().upper(), value.strip().upper())
     if code not in SUPPORTED:
-        raise FxError(f'unsupported currency {code[:8]}')
+        raise FxError('unsupported currency')
     return code
 
 
-def parse_rates(item) -> dict:
-    """{code: Decimal units per 1 USD} from the exchange-rates table item; bad values are dropped."""
+def parse_rates(item, now=None) -> dict:
+    """{code: Decimal units per 1 USD} from the exchange-rates table item.
+
+    Bad values are dropped. A malformed or stale item (older than MAX_RATE_AGE, or with no
+    readable updatedAt) yields {}, so callers book the amounts unconverted instead of guessing.
+    """
+    if not isinstance(item, dict) or not isinstance(item.get('rates'), dict):
+        return {}
+    try:
+        updated = datetime.fromisoformat(str(item.get('updatedAt')))
+    except ValueError:
+        return {}
+    if updated.tzinfo is None:
+        updated = updated.replace(tzinfo=timezone.utc)
+    if (now or datetime.now(timezone.utc)) - updated > MAX_RATE_AGE:
+        return {}
     out = {}
-    for code, raw in ((item or {}).get('rates') or {}).items():
+    for code, raw in item['rates'].items():
         try:
             rate = Decimal(str(raw))
         except (InvalidOperation, ValueError):
@@ -336,26 +550,37 @@ def to_base(lines: list, currency: str, rates: dict) -> list:
     """Return copies of `lines` with amounts in USD.
 
     `rates[currency]` is units of `currency` per 1 USD (the ExchangeRateLambda format, e.g.
-    CNY 7.25), so usd = original / rate. Each line keeps originalCurrency, originalAmount and
-    exchangeRate. Amounts are rounded half-up to cents; any rounding difference between the two
-    sides is moved onto the largest line of the smaller side so debits equal credits exactly.
+    CNY 7.25), so usd = original / rate, rounded half-up to cents. The entry total is converted
+    once; each side's rounding drift goes onto that side's largest line, so both sides equal the
+    converted total exactly (never biased up or down). Each line keeps originalCurrency,
+    originalAmount and exchangeRate.
     """
     if currency == BASE:
         return [dict(line) for line in lines]
     rate = rates.get(currency)
     if rate is None:
-        raise FxError(f'no rate for {currency}')
-    out = []
-    for line in lines:
-        original = Decimal(str(line['amount']))
-        out.append({**line, 'amount': (original / rate).quantize(CENT, rounding=ROUND_HALF_UP),
-                    'originalCurrency': currency, 'originalAmount': original, 'exchangeRate': rate})
-    debit = sum(l['amount'] for l in out if l['direction'] == 'DEBIT')
-    credit = sum(l['amount'] for l in out if l['direction'] == 'CREDIT')
-    if debit != credit:
-        short_side = 'CREDIT' if debit > credit else 'DEBIT'
-        target = max((l for l in out if l['direction'] == short_side), key=lambda l: l['amount'])
-        target['amount'] += abs(debit - credit)
+        raise FxError('no rate')
+    printed = {side: sum((Decimal(str(l['amount'])) for l in lines if l['direction'] == side), Decimal('0'))
+               for side in ('DEBIT', 'CREDIT')}
+    if printed['DEBIT'] != printed['CREDIT']:
+        raise FxError('printed amounts do not balance')
+    try:
+        target = (printed['DEBIT'] / rate).quantize(CENT, rounding=ROUND_HALF_UP)
+        out = []
+        for line in lines:
+            original = Decimal(str(line['amount']))
+            out.append({**line, 'amount': (original / rate).quantize(CENT, rounding=ROUND_HALF_UP),
+                        'originalCurrency': currency, 'originalAmount': original, 'exchangeRate': rate})
+    except ArithmeticError as e:            # e.g. InvalidOperation: too large to quantize
+        raise FxError('amount cannot be converted') from e
+    for side in ('DEBIT', 'CREDIT'):
+        side_lines = [l for l in out if l['direction'] == side]
+        drift = target - sum((l['amount'] for l in side_lines), Decimal('0'))
+        if drift:
+            largest = max(side_lines, key=lambda l: l['amount'])
+            largest['amount'] += drift
+            if largest['amount'] < 0:
+                raise FxError('rounding would make a line negative')
     return out
 ````
 
@@ -388,10 +613,43 @@ Apply to `lambda/parse/index.py`:
  
  MODEL_ID            = 'us.anthropic.claude-sonnet-4-6'
  MAX_OUTPUT_TOKENS   = 12000
-@@ -86,6 +89,29 @@
+@@ -35,6 +38,8 @@
+ 
+ _DIGITS     = re.compile(r'[0-9]+')
+ _ISO_DAY    = re.compile(r'\d{4}-\d{2}-\d{2}')
++_ISO_CURRENCY = re.compile(r'[A-Z]{3}')
++MAX_AMOUNT  = Decimal('1000000000000')     # 1e12: anything larger is a parse error, not a transaction
+ DIRECTIONS  = ('DEBIT', 'CREDIT')
+ 
+ 
+@@ -42,14 +47,18 @@
+     return hashlib.md5(data).hexdigest()
+ 
+ 
+-def compute_entry_hash(entry: dict) -> str:
+-    """Hash based on date + total amount + first 30 chars of description."""
++def compute_entry_hash(entry: dict, currency: str = BASE) -> str:
++    """Hash based on date + total amount + first 30 chars of description.
++
++    Non-USD entries hash their printed total plus the currency code, so the same receipt
++    matches itself on another day even after the exchange rate has changed.
++    """
+     date = entry.get('date', '')
+     desc = entry.get('description', '')[:30].strip().lower()
+     # Sum all debit amounts as the canonical amount
+     # Stable with the pre-Decimal float hashes for amounts with <= 2 decimals.
+     total = sum(Decimal(str(l['amount'])) for l in entry.get('lines', []) if l['direction'] == 'DEBIT')
+-    raw = f"{date}|{total:.2f}|{desc}"
++    raw = f"{date}|{total:.2f}|{desc}" if currency == BASE else f"{date}|{currency}|{total:.2f}|{desc}"
+     return hashlib.md5(raw.encode()).hexdigest()
+ 
+ 
+@@ -84,6 +93,40 @@
+     if not isinstance(parsed, dict):
+         raise ValueError('model output is not a JSON object')
      return parsed
- 
- 
++
++
 +def load_rates() -> dict:
 +    """Latest USD-based rates from ExchangeRateLambda's table; {} if unavailable."""
 +    try:
@@ -402,23 +660,32 @@ Apply to `lambda/parse/index.py`:
 +    return parse_rates(item)
 +
 +
-+def convert_to_base(entry: dict, rates_cache: dict) -> bool:
-+    """Convert entry['lines'] to USD in place. False if the amounts had to stay as printed."""
++def printed_currency(entry: dict) -> str:
++    """The entry's currency as printed: a supported ISO code, a sanitized unsupported one
++    (e.g. 'HKD'), 'XXX' for anything unreadable, or BASE if the model reported none."""
 +    try:
-+        currency = normalize_currency(entry.get('currency')) or BASE
-+        if currency != BASE:
-+            if 'rates' not in rates_cache:
-+                rates_cache['rates'] = load_rates()
-+            entry['lines'] = to_base(entry['lines'], currency, rates_cache['rates'])
++        return normalize_currency(entry.get('currency')) or BASE
++    except FxError:
++        raw = entry.get('currency')
++        code = raw.strip().upper() if isinstance(raw, str) else ''
++        return code if _ISO_CURRENCY.fullmatch(code) else 'XXX'
++
++
++def convert_to_base(entry: dict, currency: str, rates_cache: dict) -> bool:
++    """Convert entry['lines'] to USD in place. False if the amounts had to stay as printed."""
++    if currency == BASE:
++        return True
++    try:
++        if 'rates' not in rates_cache:
++            rates_cache['rates'] = load_rates()
++        entry['lines'] = to_base(entry['lines'], currency, rates_cache['rates'])
 +    except FxError:
 +        return False
 +    return True
-+
-+
+ 
+ 
  def get_accounts() -> list:
-     table = dynamodb.Table(ACCOUNTS_TABLE)
-     result = table.scan()
-@@ -112,6 +138,7 @@
+@@ -112,6 +155,7 @@
  For each transaction, produce one journal entry with balanced debit and credit lines.
  Every amount must be a number with exactly 2 decimal places, and debits must equal credits exactly.
  If classification is uncertain, add a note.
@@ -426,7 +693,7 @@ Apply to `lambda/parse/index.py`:
  For each entry, set "evidence" to {{"page": <1-based integer>, "text": <one string: the exact source line(s) copied verbatim, multiple lines joined with \\n>}}. Do not paraphrase or reformat; omit "evidence" if there is no exact source line.
  {build_transcribe_instruction(transcribe_pages)}
  
-@@ -121,6 +148,7 @@
+@@ -121,6 +165,7 @@
      {{
        "date": "YYYY-MM-DD",
        "description": "...",
@@ -434,7 +701,18 @@ Apply to `lambda/parse/index.py`:
        "lines": [
          {{ "accountId": "...", "direction": "DEBIT", "amount": 0.00, "note": "..." }},
          {{ "accountId": "...", "direction": "CREDIT", "amount": 0.00, "note": "..." }}
-@@ -297,6 +325,7 @@
+@@ -279,8 +324,8 @@
+             amount = Decimal(str(line.get('amount')))
+         except InvalidOperation:
+             return None
+-        if not amount.is_finite():
+-            return None
++        if not amount.is_finite() or amount < 0 or amount >= MAX_AMOUNT:
++            return None             # direction carries the sign; amounts are never negative
+         note = line.get('note', '')
+         clean.append({'accountId': account, 'direction': direction, 'amount': amount,
+                       'note': note if isinstance(note, str) else ''})
+@@ -297,6 +342,7 @@
      lines_table   = dynamodb.Table(LINES_TABLE)
      saved = []
      prepared = []
@@ -442,26 +720,37 @@ Apply to `lambda/parse/index.py`:
  
      # Pass 1: validate and build every item before writing anything. If a malformed entry
      # raised mid-write, the retry would see the file as a duplicate and the rest would be lost.
-@@ -309,6 +338,9 @@
+@@ -309,10 +355,16 @@
              # No amounts or dates in logs: transaction data stays out of CloudWatch.
              print(json.dumps({'event': 'entry_unbalanced_skipped', 'docId': doc_id or file_hash}))
              continue
-+        converted = convert_to_base(entry, rates_cache)
++        if not entry.get('currency'):
++            print(json.dumps({'event': 'currency_missing_assumed_usd', 'docId': doc_id or file_hash}))
++        currency   = printed_currency(entry)
++        entry_hash = compute_entry_hash(entry, currency)      # printed amounts: rate-independent
++        converted  = convert_to_base(entry, currency, rates_cache)
 +        if not converted:
 +            print(json.dumps({'event': 'fx_unconverted', 'docId': doc_id or file_hash}))
  
          entry_id   = str(uuid.uuid4())
          date       = entry['date']
-@@ -329,6 +361,8 @@
+-        entry_hash = compute_entry_hash(entry)
+         status     = 'DUPLICATE_SUSPECT' if is_duplicate_entry(entry_hash, session_id) else 'PENDING'
+ 
+         item = {
+@@ -329,6 +381,11 @@
          }
          if session_id:
              item['sessionId'] = session_id
 +        if not converted:
-+            item['fxStatus'] = 'unconverted'    # amounts are not USD; the Upload page asks for review
++            # Amounts are as printed, not USD: the Upload page warns and ConfirmLambda requires
++            # an explicit acknowledgement before booking them.
++            item['fxStatus'] = 'unconverted'
++            item['printedCurrency'] = currency
          evidence = []
          if source_type:
              try:
-@@ -346,14 +380,19 @@
+@@ -346,14 +403,19 @@
      for item, lines in prepared:
          entries_table.put_item(Item=item)
          for i, line in enumerate(lines):
@@ -498,16 +787,141 @@ Apply to `lambda/manual-entry/index.py`:
          return {'statusCode': 201, 'headers': CORS, 'body': json.dumps({'accountId': account_id})}
 ````
 
+Replace `lambda/confirm/index.py` entirely. It is small, and the handler is restructured:
+
+````python
+import boto3
+import json
+import os
+from decimal import Decimal, InvalidOperation
+
+from penny_common.session import session_from_headers
+
+dynamodb = boto3.resource('dynamodb')
+
+ENTRIES_TABLE = os.environ.get('ENTRIES_TABLE', 'finance-journal-entries')
+LINES_TABLE   = os.environ.get('LINES_TABLE', 'finance-journal-lines')
+
+CORS = {'Access-Control-Allow-Origin': '*', 'Content-Type': 'application/json'}
+DIRECTIONS = ('DEBIT', 'CREDIT')
+MAX_AMOUNT = Decimal('1000000000000')
+FX_FIELDS = ('originalCurrency', 'originalAmount', 'exchangeRate')   # same as ParseLambda/ManualEntry
+
+
+def _response(status, body):
+    return {'statusCode': status, 'headers': CORS, 'body': json.dumps(body)}
+
+
+def lines_balance(lines: list) -> bool:
+    """Exact Decimal comparison: 100.00 vs 99.99 never passes."""
+    debit  = sum((Decimal(str(l['amount'])) for l in lines if l['direction'] == 'DEBIT'), Decimal('0'))
+    credit = sum((Decimal(str(l['amount'])) for l in lines if l['direction'] == 'CREDIT'), Decimal('0'))
+    return debit == credit
+
+
+def clean_lines(raw) -> list:
+    """Validated copies of client-supplied lines, or None if any line is malformed."""
+    if not isinstance(raw, list) or len(raw) < 2:
+        return None
+    out = []
+    for line in raw:
+        if not isinstance(line, dict):
+            return None
+        account, direction = line.get('accountId'), line.get('direction')
+        if not isinstance(account, str) or not account or direction not in DIRECTIONS:
+            return None
+        try:
+            amount = Decimal(str(line.get('amount')))
+        except InvalidOperation:
+            return None
+        if not amount.is_finite() or amount < 0 or amount >= MAX_AMOUNT:
+            return None
+        note = line.get('note', '')
+        item = {'accountId': account, 'direction': direction, 'amount': amount,
+                'note': note if isinstance(note, str) else ''}
+        if all(line.get(k) not in (None, '') for k in FX_FIELDS):
+            item.update({k: str(line[k]) for k in FX_FIELDS})
+        out.append(item)
+    return out
+
+
+def handler(event, context):
+    entry_id = (event.get('pathParameters') or {}).get('id', '')
+    try:
+        session_id = session_from_headers(event.get('headers'))
+        body = json.loads(event.get('body') or '{}', parse_float=Decimal)
+    except (ValueError, TypeError):
+        return _response(400, {'error': 'invalid request'})
+    if not isinstance(body, dict):
+        return _response(400, {'error': 'invalid request'})
+
+    entries_table = dynamodb.Table(ENTRIES_TABLE)
+    lines_table   = dynamodb.Table(LINES_TABLE)
+
+    entry = entries_table.get_item(Key={'entryId': entry_id}).get('Item') if entry_id else None
+    # Owner entries have no sessionId and owner requests send none: a session can only
+    # confirm its own entries.
+    if not entry or entry.get('sessionId') != session_id:
+        return _response(404, {'error': 'Entry not found'})
+
+    if entry.get('status') == 'CONFIRMED':
+        return _response(200, {'message': 'Already confirmed'})
+
+    if entry.get('fxStatus') == 'unconverted' and body.get('acknowledgeUnconverted') is not True:
+        return _response(409, {'error': 'Amounts were not converted to USD. Review them, then confirm again.',
+                               'fxStatus': 'unconverted'})
+
+    stored = lines_table.query(
+        KeyConditionExpression='entryId = :e',
+        ExpressionAttributeValues={':e': entry_id},
+    ).get('Items', [])
+
+    new_lines = None
+    if 'lines' in body:
+        new_lines = clean_lines(body['lines'])
+        if new_lines is None:
+            return _response(400, {'error': 'Invalid lines'})
+    if not lines_balance(new_lines if new_lines is not None else stored):
+        return _response(400, {'error': 'Debit/credit lines do not balance'})
+
+    if new_lines is not None:
+        for line in stored:
+            lines_table.delete_item(Key={'entryId': entry_id, 'lineId': line['lineId']})
+        for i, line in enumerate(new_lines):
+            lines_table.put_item(Item={**line, 'entryId': entry_id, 'lineId': f'{i:03d}',
+                                       'amount': str(line['amount'])})
+
+    if isinstance(body.get('description'), str):
+        entries_table.update_item(
+            Key={'entryId': entry_id},
+            UpdateExpression='SET description = :d',
+            ExpressionAttributeValues={':d': body['description']},
+        )
+
+    entries_table.update_item(
+        Key={'entryId': entry_id},
+        UpdateExpression='SET #s = :s REMOVE fxStatus',
+        ExpressionAttributeNames={'#s': 'status'},
+        ExpressionAttributeValues={':s': 'CONFIRMED'},
+    )
+
+    return _response(200, {'entryId': entry_id, 'status': 'CONFIRMED'})
+````
+
 Apply to `lib/finance-stack.ts`:
 
 ````diff
 --- a/lib/finance-stack.ts
 +++ b/lib/finance-stack.ts
-@@ -424,6 +424,7 @@
+@@ -424,6 +424,11 @@
      // /api/exchange-rates — served by queryFn
      apiRoot.addResource('exchange-rates').addMethod('GET', new apigw.LambdaIntegration(queryFn));
      exchangeRates.grantReadData(queryFn);
-+    exchangeRates.grantReadData(parseFn);   // non-USD documents are converted at parse time
++    // Non-USD documents are converted at parse time; ParseLambda only ever reads the one rates item.
++    parseFn.addToRolePolicy(new iam.PolicyStatement({
++      actions: ['dynamodb:GetItem'],
++      resources: [exchangeRates.tableArn],
++    }));
      monthlyCache.grantReadData(queryFn);
  
      // /api/push/subscribe — POST to subscribe, DELETE to unsubscribe
@@ -515,7 +929,7 @@ Apply to `lib/finance-stack.ts`:
 
 - [ ] **Step 4: Verify.**
 
-Run: `python -m pytest test/lambda -q` and expect `331 passed`.
+Run: `python -m pytest test/lambda -q` and expect `364 passed`.
 Run: `npx tsc --noEmit -p .` and expect no output.
 Run: `npx jest` and expect `Tests: 21 passed, 21 total`.
 Run: `CI=true npx cdk synth --quiet` and expect exit 0.
@@ -523,8 +937,8 @@ Run: `CI=true npx cdk synth --quiet` and expect exit 0.
 - [ ] **Step 5: Commit (user)**
 
 ```bash
-git add lambda/common/penny_common/fx.py lambda/parse/index.py lambda/manual-entry/index.py lib/finance-stack.ts test/finance-stack.test.ts test/lambda/test_penny_fx.py test/lambda/test_parse_currency.py
-git commit -m "feat: book parsed documents in USD with balanced currency conversion"
+git add lambda/common/penny_common/fx.py lambda/parse/index.py lambda/manual-entry/index.py lambda/confirm/index.py lib/finance-stack.ts test/finance-stack.test.ts test/lambda/test_penny_fx.py test/lambda/test_parse_currency.py test/lambda/test_confirm.py
+git commit -m "feat: book parsed documents in USD with balanced conversion; validate lines on confirm"
 ```
 
 ---
@@ -1248,7 +1662,9 @@ git commit -m "feat: clickable advisor citations and a shared source-evidence vi
 The page used to wait a fixed 20 s and then report "Parsing complete" whether or not parsing had finished. Now it polls for PENDING entries whose `fileKey` matches the upload. It finishes once their count holds steady for one more poll, because entries are written one by one, or after 2 minutes. A file uploaded before is skipped as a duplicate, so it always ends in the timeout message. The same task:
 - escapes pending-entry text;
 - shows original-currency amounts;
-- shows the `fxStatus: "unconverted"` warning.
+- shows the `fxStatus: "unconverted"` warning, including the printed currency;
+- asks for explicit acknowledgement before confirming such an entry (ConfirmLambda otherwise answers 409);
+- makes Confirm All skip and count entries that still need review, instead of failing halfway.
 
 **Files:**
 - Create: `frontend/upload-poll.js`, `test/frontend/upload-poll.test.ts`
@@ -1393,16 +1809,15 @@ Apply to `frontend/pages/upload.js`:
      } catch (e) {
        showStatus('Error: ' + e.message, 'text-red-600');
      }
-@@ -276,10 +283,15 @@
-         <div class="flex items-center gap-2 mb-3 px-3 py-2 bg-yellow-50 rounded-lg text-sm text-yellow-800">
+@@ -277,9 +284,14 @@
            <span>⚠️</span>
            <span><strong>Possible duplicate</strong> — a similar transaction already exists. Review before confirming.</span>
-+        </div>` : ''}
+         </div>` : ''}
 +        ${e.fxStatus === 'unconverted' ? `
 +        <div class="flex items-center gap-2 mb-3 px-3 py-2 bg-amber-50 rounded-lg text-sm text-amber-800">
 +          <span>💱</span>
-+          <span><strong>Not converted to USD</strong> — amounts are as printed on the document. Edit them before confirming.</span>
-         </div>` : ''}
++          <span><strong>Not converted to USD</strong> — amounts are as printed${e.printedCurrency ? ` (${Citations.esc(e.printedCurrency)})` : ''}. Edit them to USD before confirming.</span>
++        </div>` : ''}
          <div class="flex justify-between items-start mb-3">
            <div>
 -            <p class="font-medium text-gray-800">${e.date} — ${e.description}</p>
@@ -1410,6 +1825,52 @@ Apply to `frontend/pages/upload.js`:
              <span class="text-xs text-gray-400 uppercase tracking-wide">${e.source}</span>
            </div>
            <div class="flex gap-2">
+@@ -380,7 +392,17 @@
+     const entry = (window._pendingEntries || []).find(e => e.entryId === id);
+     // Pass current (possibly edited) lines so ConfirmLambda uses them
+     const body = entry?.lines ? { lines: entry.lines } : {};
+-    await API.put(`/api/entries/${id}/confirm`, body);
++    if (entry?.fxStatus === 'unconverted') {
++      const cur = entry.printedCurrency || 'a foreign currency';
++      if (!confirm(`These amounts are in ${cur} and were not converted to USD. Book them as USD anyway?`)) return;
++      body.acknowledgeUnconverted = true;
++    }
++    try {
++      await API.put(`/api/entries/${id}/confirm`, body);
++    } catch (e) {
++      showStatus('Could not confirm: ' + e.message, 'text-red-600');
++      return;
++    }
+     document.getElementById(`entry-${id}`)?.remove();
+     const remaining = document.querySelectorAll('[id^="entry-"]');
+     if (!remaining.length) document.getElementById('pending-section').classList.add('hidden');
+@@ -396,13 +418,22 @@
+ 
+   document.getElementById('confirm-all').onclick = async () => {
+     const cards = document.querySelectorAll('[id^="entry-"]');
++    let skipped = 0;
+     for (const card of cards) {
+       const id = card.id.replace('entry-', '');
+-      await API.put(`/api/entries/${id}/confirm`);
+-      card.remove();
++      try {
++        await API.put(`/api/entries/${id}/confirm`);   // unconverted entries answer 409 and stay
++        card.remove();
++      } catch (e) {
++        skipped++;
++      }
+     }
+-    document.getElementById('pending-section').classList.add('hidden');
+-    showStatus('All entries confirmed.', 'text-green-600');
++    if (!skipped) {
++      document.getElementById('pending-section').classList.add('hidden');
++      showStatus('All entries confirmed.', 'text-green-600');
++    } else {
++      showStatus(`${skipped} ${skipped === 1 ? 'entry needs' : 'entries need'} review before confirming.`, 'text-amber-600');
++    }
+   };
+ 
+   // Edit modal logic
 ````
 
 Apply to `frontend/index.html`:
@@ -1756,7 +2217,7 @@ Run it again and confirm with `md5 eval/dataset/v1/*` that the output is byte-id
 
 - [ ] **Step 4: Verify.**
 
-Run: `python -m pytest test/lambda test/eval -q` and expect `332 passed`.
+Run: `python -m pytest test/lambda test/eval -q` and expect `365 passed`.
 Open `eval/dataset/v1/receipt_2026_03_cafe.png` and check it is a legible receipt totalling 12.00.
 
 - [ ] **Step 5: Commit (user)**
@@ -2337,7 +2798,7 @@ Apply to `.github/workflows/ci.yml`:
 
 - [ ] **Step 4: Verify.**
 
-Run: `python -m pytest test/lambda test/eval -q` and expect `345 passed`.
+Run: `python -m pytest test/lambda test/eval -q` and expect `378 passed`.
 Run: `python eval/run_eval.py --help` and expect usage text listing `{setup,run}`.
 
 - [ ] **Step 5: Commit (user)**
@@ -2362,7 +2823,7 @@ git commit -m "feat: deterministic eval runner (tools, numbers, citations, retri
 npx cdk deploy
 ```
 Expected changes:
-- ParseLambda gains `dynamodb:GetItem`/`Query`/`Scan` (and related reads) on `finance-exchange-rates`;
+- ParseLambda gains `dynamodb:GetItem` on `finance-exchange-rates`;
 - the new layer version;
 - updated Lambda code.
 
@@ -2425,7 +2886,7 @@ The README is written **after** Task 8, because its numbers are copied from `doc
 4. **Cost**: per-document parse cost, per-question advisor cost for Haiku vs Sonnet (from the eval), and idle cost of about $0.
 5. **Evaluation**: the agent table, retrieval and evidence numbers, with a link to `docs/evaluation-results.md` and the method's limitations.
 6. **Running it**: tests, layer build, deploy, frontend sync, eval.
-7. **Known limitations**, from spec §12: no auth, a synthetic-only public demo, and the confirm endpoint not checking session ownership.
+7. **Known limitations**, from spec §12: no auth (the session header can be spoofed), a synthetic-only public demo, and FX at the latest rate rather than the transaction-date rate.
 
 - [ ] **Step 1:** Draft `README.md` with the numbers filled in from `docs/evaluation-results.md`. The user reviews it.
 - [ ] **Step 2: Commit (user)**
@@ -2450,7 +2911,7 @@ git commit -m "docs: rewrite README around architecture, cost and eval results"
   - Upload page polling → Task 4.
   - `playwright` → Task 5.
   - ¥ on USD documents → Tasks 1 and 2.
-- **New finding:** `PUT /api/entries/{id}/confirm` does not check session ownership. It is listed as a known limitation (Task 9) and not fixed here.
+- **Found and fixed during Task 1 review:** `PUT /api/entries/{id}/confirm` wrote client lines without a balance check, dropped FX fields, and did not check the session. All three are fixed in Task 1.
 - **Test counts:**
-  - pytest: 303 → 331 (Task 1) → 332 (Task 6) → 345 (Task 7).
+  - pytest: 303 → 364 (Task 1) → 365 (Task 6) → 378 (Task 7).
   - jest: 20 → 21 (Task 1) → 35 (Task 3) → 40 (Task 4).

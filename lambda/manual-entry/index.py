@@ -136,7 +136,7 @@ def handler(event, context):
             'type':      body['type'],
             'parentId':  body.get('parentId'),
             'isSystem':  False,
-            'currency':  body.get('currency', 'CNY'),
+            'currency':  body.get('currency', 'USD'),
         })
         return {'statusCode': 201, 'headers': CORS, 'body': json.dumps({'accountId': account_id})}
 
