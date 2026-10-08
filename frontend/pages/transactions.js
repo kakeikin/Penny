@@ -207,7 +207,7 @@ async function transactions(app) {
         const origCurr = (l.originalCurrency && l.originalAmount != null) ? ` <span class="text-xs text-gray-400">(${escHtml(l.originalCurrency)} ${parseFloat(l.originalAmount).toFixed(2)})</span>` : '';
         return `
         <div class="flex justify-between text-sm py-1 border-t border-gray-50">
-          <span class="text-gray-600">${acctName(l.accountId)}</span>
+          <span class="text-gray-600">${escHtml(acctName(l.accountId))}</span>
           <span class="text-gray-400 text-xs self-center">${l.direction === 'DEBIT' ? '→ Out' : '← In'}</span>
           <span class="text-gray-800">${Money.fmt(parseFloat(l.amount))}${origCurr}</span>
         </div>`;
@@ -221,11 +221,11 @@ async function transactions(app) {
             <div class="flex-1 min-w-0">
               <div class="flex items-center gap-2 mb-0.5">
                 <span class="text-xs font-medium px-2 py-0.5 rounded-full ${typeBadge}">${typeLabel}</span>
-                <span class="text-xs text-gray-400">${s.category}</span>
+                <span class="text-xs text-gray-400">${escHtml(s.category)}</span>
               </div>
-              <p class="font-medium text-gray-800 truncate">${e.description}</p>
+              <p class="font-medium text-gray-800 truncate">${escHtml(e.description)}</p>
               ${(e.tags || []).length ? `<div class="flex flex-wrap gap-1 mt-1">${(e.tags||[]).map(t => `<span class="text-xs bg-purple-50 text-purple-700 px-2 py-0.5 rounded-full">#${escHtml(t)}</span>`).join('')}</div>` : ''}
-              <p class="text-xs text-gray-400">${e.date} · ${e.source}</p>
+              <p class="text-xs text-gray-400">${escHtml(e.date)} · ${escHtml(e.source)}</p>
             </div>
             <div class="flex items-center gap-3 ml-4 shrink-0">
               ${amountHtml}
@@ -233,7 +233,9 @@ async function transactions(app) {
               <button onclick="event.stopPropagation(); deleteEntry('${e.entryId}')" class="text-xs text-red-400 hover:text-red-600">Delete</button>
             </div>
           </div>
-          <div id="detail-${e.entryId}" class="hidden mt-2">${detailLines}</div>
+          <div id="detail-${e.entryId}" class="hidden mt-2">${detailLines}${(e.evidence || []).length
+            ? `<button type="button" onclick="EvidenceViewer.openEntry('${e.entryId}')" class="mt-2 text-xs text-[#6a8a3e] hover:underline">View source evidence →</button>`
+            : ''}</div>
         </div>`;
     }).join('');
   }

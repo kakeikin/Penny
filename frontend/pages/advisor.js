@@ -2,7 +2,7 @@ async function advisor(app) {
   app.innerHTML = `
     <div class="max-w-2xl mx-auto">
       <h1 class="text-2xl font-bold text-gray-900 mb-2">AI Financial Advisor</h1>
-      <p class="text-sm text-gray-500 mb-6">Ask questions about your finances in plain language. Your data from the last 3 months is used as context.</p>
+      <p class="text-sm text-gray-500 mb-6">Ask questions about your finances in plain language. Every figure links to its source: click a citation to see the transaction or document it came from.</p>
 
       <div class="card mb-4" style="min-height: 400px; max-height: 600px; overflow-y: auto;" id="chat-history">
         <div class="text-center text-gray-400 text-sm py-16" id="chat-placeholder">
@@ -34,23 +34,33 @@ async function advisor(app) {
       </div>
     </div>`;
 
-  function escHtml(s) {
-    return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-  }
+  const citationsByMessage = new Map();   // message id -> citations array, for chip clicks
+  let messageSeq = 0;
 
-  function appendMessage(role, text) {
+  document.getElementById('chat-history').addEventListener('click', e => {
+    const chip = e.target.closest('.cite-chip');
+    if (!chip) return;
+    const citations = citationsByMessage.get(chip.closest('[data-msg]')?.dataset.msg) || [];
+    EvidenceViewer.openCitation(citations.find(c => c.ref === chip.dataset.ref));
+  });
+
+  // html must already be safe: user text is escaped, advisor text goes through Citations.renderAnswer.
+  function appendMessage(role, html, citations) {
     const history = document.getElementById('chat-history');
     const placeholder = document.getElementById('chat-placeholder');
     if (placeholder) placeholder.remove();
 
     const isUser = role === 'user';
+    const id = String(++messageSeq);
+    if (citations) citationsByMessage.set(id, citations);
     const div = document.createElement('div');
+    div.dataset.msg = id;
     div.className = `flex ${isUser ? 'justify-end' : 'justify-start'} mb-4`;
     div.innerHTML = `
       <div class="max-w-lg px-4 py-3 rounded-2xl text-sm ${isUser
         ? 'bg-[#8aaa5e] text-white rounded-br-sm'
         : 'bg-gray-100 text-gray-800 rounded-bl-sm'}">
-        ${(isUser ? escHtml(text) : text).replace(/\n/g, '<br>')}
+        ${html}
       </div>`;
     history.appendChild(div);
     history.scrollTop = history.scrollHeight;
@@ -67,7 +77,7 @@ async function advisor(app) {
     sendBtn.disabled = true;
     sendBtn.textContent = '...';
 
-    appendMessage('user', question);
+    appendMessage('user', Citations.esc(question));
 
     // Thinking indicator
     const history = document.getElementById('chat-history');
@@ -81,10 +91,15 @@ async function advisor(app) {
     try {
       const res = await API.post('/api/advisor', { question });
       document.getElementById('thinking')?.remove();
-      appendMessage('advisor', res.answer || 'No response.');
+      const notes = [];
+      if (res.evidenceStatus === 'unsupported') notes.push('Some figures in this answer have no cited source.');
+      if (res.truncated) notes.push('The lookup was cut short; the answer may be incomplete.');
+      appendMessage('advisor', Citations.renderAnswer(res.answer || 'No response.', res.citations)
+        + notes.map(n => `<p class="mt-2 text-xs text-amber-700">${Citations.esc(n)}</p>`).join(''),
+        res.citations || []);
     } catch (e) {
       document.getElementById('thinking')?.remove();
-      appendMessage('advisor', `Error: ${e.message}`);
+      appendMessage('advisor', Citations.esc(`Error: ${e.message}`));
     } finally {
       input.disabled = false;
       sendBtn.disabled = false;

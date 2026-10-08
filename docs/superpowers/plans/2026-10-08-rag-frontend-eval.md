@@ -1332,6 +1332,15 @@ describe('evidence links', () => {
     expect(html).toContain('Open source page 1');
   });
 });
+
+describe('money', () => {
+  test('negative amounts put the sign before the symbol and stay exact', () => {
+    const html = Citations.detailHtml({ ref: 'S1', type: 'summary', groupBy: 'month', month: '2026-03',
+      income: '0.10', expense: '0.30', net: '-0.20' });
+    expect(html).toContain('-$0.20');
+    expect(html).toContain('$0.10');
+  });
+});
 ````
 
 - [ ] **Step 2: Run it to verify it fails.**
@@ -1370,8 +1379,10 @@ const Citations = (() => {
       .replace(/\n/g, '<br>');
   }
 
+  // Amounts arrive as exact decimal strings from the API; keep them exact (no float parsing).
   function money(v) {
-    return '$' + esc(v);   // amounts arrive as exact decimal strings from the API
+    const s = String(v ?? '');
+    return s.startsWith('-') ? '-$' + esc(s.slice(1)) : '$' + esc(s);
   }
 
   function quote(text) {
@@ -1441,6 +1452,9 @@ Create `frontend/evidence-viewer.js`:
 ````js
 // One modal shared by the Transactions page ("View source evidence") and advisor citation chips.
 const EvidenceViewer = (() => {
+  let seq = 0;          // bumped by every open/close: a slow fetch never repaints a newer view
+  let returnFocus = null;
+
   function modal() {
     let el = document.getElementById('evidence-modal');
     if (el) return el;
@@ -1448,7 +1462,8 @@ const EvidenceViewer = (() => {
     el.id = 'evidence-modal';
     el.className = 'fixed inset-0 bg-black/40 z-50 hidden items-center justify-center p-4';
     el.innerHTML = `
-      <div class="bg-white rounded-xl shadow-lg w-full max-w-lg max-h-[80vh] overflow-y-auto p-6">
+      <div role="dialog" aria-modal="true" aria-labelledby="evidence-title"
+           class="bg-white rounded-xl shadow-lg w-full max-w-lg max-h-[80vh] overflow-y-auto p-6">
         <div class="flex justify-between items-center mb-4">
           <h2 id="evidence-title" class="font-semibold text-gray-900"></h2>
           <button type="button" id="evidence-close" class="text-gray-400 hover:text-gray-600 text-xl" aria-label="Close">×</button>
@@ -1456,23 +1471,35 @@ const EvidenceViewer = (() => {
         <div id="evidence-body"></div>
       </div>`;
     el.addEventListener('click', e => { if (e.target === el || e.target.id === 'evidence-close') close(); });
-    document.addEventListener('keydown', e => { if (e.key === 'Escape') close(); });
+    document.addEventListener('keydown', e => { if (e.key === 'Escape' && isOpen()) close(); });
     window.addEventListener('hashchange', close);    // the modal lives outside #app, so close it on navigation
     document.body.appendChild(el);
     return el;
   }
 
+  function isOpen() {
+    const el = document.getElementById('evidence-modal');
+    return !!el && !el.classList.contains('hidden');
+  }
+
   function show(title, bodyHtml) {
     const el = modal();
+    if (!isOpen()) returnFocus = document.activeElement;
     document.getElementById('evidence-title').textContent = title;
     document.getElementById('evidence-body').innerHTML = bodyHtml;
     el.classList.remove('hidden');
     el.classList.add('flex');
+    document.getElementById('evidence-close').focus();
   }
 
   function close() {
+    seq++;
+    if (!isOpen()) return;
     const el = document.getElementById('evidence-modal');
-    if (el) { el.classList.add('hidden'); el.classList.remove('flex'); }
+    el.classList.add('hidden');
+    el.classList.remove('flex');
+    if (returnFocus && document.contains(returnFocus)) returnFocus.focus();
+    returnFocus = null;
   }
 
   async function fetchEvidence(entryId, render) {
@@ -1485,18 +1512,21 @@ const EvidenceViewer = (() => {
   }
 
   async function openEntry(entryId) {
+    const mine = ++seq;
     show('Source evidence', '<p class="text-sm text-gray-400">Loading…</p>');
-    show('Source evidence', await fetchEvidence(entryId, Citations.evidenceHtml));
+    const html = await fetchEvidence(entryId, Citations.evidenceHtml);
+    if (mine === seq) show('Source evidence', html);
   }
 
   // A transaction chip already quotes its source line; fetch only the presigned link to the file.
   async function openCitation(citation) {
     const title = citation ? `Citation ${citation.ref}` : 'Citation';
     const detail = Citations.detailHtml(citation);
+    const mine = ++seq;
     if (!citation || citation.type !== 'transaction' || !citation.evidence) return show(title, detail);
     show(title, detail + '<p class="text-sm text-gray-400 mt-3">Loading source file…</p>');
     const links = await fetchEvidence(citation.entryId, Citations.sourceLinksHtml);
-    show(title, detail + `<div class="mt-3">${links}</div>`);
+    if (mine === seq) show(title, detail + `<div class="mt-3">${links}</div>`);
   }
 
   return { openEntry, openCitation, close };
@@ -1590,15 +1620,30 @@ Apply to `frontend/pages/transactions.js`:
 ````diff
 --- a/frontend/pages/transactions.js
 +++ b/frontend/pages/transactions.js
-@@ -223,7 +223,7 @@
+@@ -207,7 +207,7 @@
+         const origCurr = (l.originalCurrency && l.originalAmount != null) ? ` <span class="text-xs text-gray-400">(${escHtml(l.originalCurrency)} ${parseFloat(l.originalAmount).toFixed(2)})</span>` : '';
+         return `
+         <div class="flex justify-between text-sm py-1 border-t border-gray-50">
+-          <span class="text-gray-600">${acctName(l.accountId)}</span>
++          <span class="text-gray-600">${escHtml(acctName(l.accountId))}</span>
+           <span class="text-gray-400 text-xs self-center">${l.direction === 'DEBIT' ? '→ Out' : '← In'}</span>
+           <span class="text-gray-800">${Money.fmt(parseFloat(l.amount))}${origCurr}</span>
+         </div>`;
+@@ -221,11 +221,11 @@
+             <div class="flex-1 min-w-0">
+               <div class="flex items-center gap-2 mb-0.5">
                  <span class="text-xs font-medium px-2 py-0.5 rounded-full ${typeBadge}">${typeLabel}</span>
-                 <span class="text-xs text-gray-400">${s.category}</span>
+-                <span class="text-xs text-gray-400">${s.category}</span>
++                <span class="text-xs text-gray-400">${escHtml(s.category)}</span>
                </div>
 -              <p class="font-medium text-gray-800 truncate">${e.description}</p>
 +              <p class="font-medium text-gray-800 truncate">${escHtml(e.description)}</p>
                ${(e.tags || []).length ? `<div class="flex flex-wrap gap-1 mt-1">${(e.tags||[]).map(t => `<span class="text-xs bg-purple-50 text-purple-700 px-2 py-0.5 rounded-full">#${escHtml(t)}</span>`).join('')}</div>` : ''}
-               <p class="text-xs text-gray-400">${e.date} · ${e.source}</p>
+-              <p class="text-xs text-gray-400">${e.date} · ${e.source}</p>
++              <p class="text-xs text-gray-400">${escHtml(e.date)} · ${escHtml(e.source)}</p>
              </div>
+             <div class="flex items-center gap-3 ml-4 shrink-0">
+               ${amountHtml}
 @@ -233,7 +233,9 @@
                <button onclick="event.stopPropagation(); deleteEntry('${e.entryId}')" class="text-xs text-red-400 hover:text-red-600">Delete</button>
              </div>
@@ -1646,7 +1691,7 @@ Apply to `frontend/index-mobile.html`:
 
 - [ ] **Step 4: Verify.**
 
-Run: `npx jest` and expect `Tests: 35 passed, 35 total`.
+Run: `npx jest` and expect `Tests: 36 passed, 36 total`.
 Run: `npx tsc --noEmit -p .` and expect no output.
 Run: `for f in frontend/*.js frontend/pages/*.js; do node --check "$f" || echo "BAD $f"; done` and expect no output.
 
@@ -1907,7 +1952,7 @@ Apply to `frontend/index-mobile.html`:
 
 - [ ] **Step 4: Verify.**
 
-Run: `npx jest` and expect `Tests: 40 passed, 40 total`.
+Run: `npx jest` and expect `Tests: 41 passed, 41 total`.
 Run: `for f in frontend/*.js frontend/pages/*.js; do node --check "$f" || echo "BAD $f"; done` and expect no output.
 
 - [ ] **Step 5: Commit (user)**
@@ -1959,7 +2004,7 @@ Expected: `package-lock.json` changes in exactly these places:
 
 - [ ] **Step 3: Verify.**
 
-Run: `npx jest` and expect `Tests: 40 passed, 40 total`.
+Run: `npx jest` and expect `Tests: 41 passed, 41 total`.
 
 - [ ] **Step 4: Commit (user)**
 
@@ -2916,4 +2961,4 @@ git commit -m "docs: rewrite README around architecture, cost and eval results"
 - **Found and fixed during Task 1 review:** `PUT /api/entries/{id}/confirm` wrote client lines without a balance check, dropped FX fields, and did not check the session. All three are fixed in Task 1.
 - **Test counts:**
   - pytest: 303 → 364 (Task 1) → 365 (Task 6) → 378 (Task 7).
-  - jest: 20 → 21 (Task 1) → 35 (Task 3) → 40 (Task 4).
+  - jest: 20 → 21 (Task 1) → 36 (Task 3) → 41 (Task 4).
