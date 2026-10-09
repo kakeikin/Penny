@@ -1,0 +1,210 @@
+[
+  {
+    "file": "statement_2026_01.pdf",
+    "page": 1,
+    "line": "01/02  TRADER JOES #552           -43.66",
+    "date": "2026-01-02",
+    "description": "TRADER JOES #552",
+    "amount": "-43.66"
+  },
+  {
+    "file": "statement_2026_01.pdf",
+    "page": 1,
+    "line": "01/05  PAYROLL ACME CORP        +3200.00",
+    "date": "2026-01-05",
+    "description": "PAYROLL ACME CORP",
+    "amount": "3200.00"
+  },
+  {
+    "file": "statement_2026_01.pdf",
+    "page": 1,
+    "line": "01/09  ABC UTILITIES              -90.91",
+    "date": "2026-01-09",
+    "description": "ABC UTILITIES",
+    "amount": "-90.91"
+  },
+  {
+    "file": "statement_2026_01.pdf",
+    "page": 1,
+    "line": "01/14  NETFLIX.COM                -15.49",
+    "date": "2026-01-14",
+    "description": "NETFLIX.COM",
+    "amount": "-15.49"
+  },
+  {
+    "file": "statement_2026_01.pdf",
+    "page": 1,
+    "line": "01/17  TRADER JOES #552           -64.39",
+    "date": "2026-01-17",
+    "description": "TRADER JOES #552",
+    "amount": "-64.39"
+  },
+  {
+    "file": "statement_2026_01.pdf",
+    "page": 1,
+    "line": "01/21  SHELL OIL 57442            -30.26",
+    "date": "2026-01-21",
+    "description": "SHELL OIL 57442",
+    "amount": "-30.26"
+  },
+  {
+    "file": "statement_2026_01.pdf",
+    "page": 1,
+    "line": "01/24  BLUE BOTTLE COFFEE          -6.06",
+    "date": "2026-01-24",
+    "description": "BLUE BOTTLE COFFEE",
+    "amount": "-6.06"
+  },
+  {
+    "file": "statement_2026_01.pdf",
+    "page": 1,
+    "line": "01/28  RENT PAYMENT             -1850.00",
+    "date": "2026-01-28",
+    "description": "RENT PAYMENT",
+    "amount": "-1850.00"
+  },
+  {
+    "file": "statement_2026_02.pdf",
+    "page": 1,
+    "line": "02/02  TRADER JOES #552           -44.10",
+    "date": "2026-02-02",
+    "description": "TRADER JOES #552",
+    "amount": "-44.10"
+  },
+  {
+    "file": "statement_2026_02.pdf",
+    "page": 1,
+    "line": "02/05  PAYROLL ACME CORP        +3200.00",
+    "date": "2026-02-05",
+    "description": "PAYROLL ACME CORP",
+    "amount": "3200.00"
+  },
+  {
+    "file": "statement_2026_02.pdf",
+    "page": 1,
+    "line": "02/09  ABC UTILITIES             -121.43",
+    "date": "2026-02-09",
+    "description": "ABC UTILITIES",
+    "amount": "-121.43"
+  },
+  {
+    "file": "statement_2026_02.pdf",
+    "page": 1,
+    "line": "02/14  NETFLIX.COM                -15.49",
+    "date": "2026-02-14",
+    "description": "NETFLIX.COM",
+    "amount": "-15.49"
+  },
+  {
+    "file": "statement_2026_02.pdf",
+    "page": 1,
+    "line": "02/17  TRADER JOES #552           -41.76",
+    "date": "2026-02-17",
+    "description": "TRADER JOES #552",
+    "amount": "-41.76"
+  },
+  {
+    "file": "statement_2026_02.pdf",
+    "page": 1,
+    "line": "02/21  SHELL OIL 57442            -37.27",
+    "date": "2026-02-21",
+    "description": "SHELL OIL 57442",
+    "amount": "-37.27"
+  },
+  {
+    "file": "statement_2026_02.pdf",
+    "page": 1,
+    "line": "02/24  BLUE BOTTLE COFFEE         -14.16",
+    "date": "2026-02-24",
+    "description": "BLUE BOTTLE COFFEE",
+    "amount": "-14.16"
+  },
+  {
+    "file": "statement_2026_02.pdf",
+    "page": 1,
+    "line": "02/28  RENT PAYMENT             -1850.00",
+    "date": "2026-02-28",
+    "description": "RENT PAYMENT",
+    "amount": "-1850.00"
+  },
+  {
+    "file": "statement_2026_03.pdf",
+    "page": 1,
+    "line": "03/02  TRADER JOES #552           -81.98",
+    "date": "2026-03-02",
+    "description": "TRADER JOES #552",
+    "amount": "-81.98"
+  },
+  {
+    "file": "statement_2026_03.pdf",
+    "page": 1,
+    "line": "03/05  PAYROLL ACME CORP        +3200.00",
+    "date": "2026-03-05",
+    "description": "PAYROLL ACME CORP",
+    "amount": "3200.00"
+  },
+  {
+    "file": "statement_2026_03.pdf",
+    "page": 1,
+    "line": "03/09  ABC UTILITIES             -100.06",
+    "date": "2026-03-09",
+    "description": "ABC UTILITIES",
+    "amount": "-100.06"
+  },
+  {
+    "file": "statement_2026_03.pdf",
+    "page": 1,
+    "line": "03/14  NETFLIX.COM                -15.49",
+    "date": "2026-03-14",
+    "description": "NETFLIX.COM",
+    "amount": "-15.49"
+  },
+  {
+    "file": "statement_2026_03.pdf",
+    "page": 1,
+    "line": "03/17  TRADER JOES #552           -42.96",
+    "date": "2026-03-17",
+    "description": "TRADER JOES #552",
+    "amount": "-42.96"
+  },
+  {
+    "file": "statement_2026_03.pdf",
+    "page": 1,
+    "line": "03/21  SHELL OIL 57442            -40.84",
+    "date": "2026-03-21",
+    "description": "SHELL OIL 57442",
+    "amount": "-40.84"
+  },
+  {
+    "file": "statement_2026_03.pdf",
+    "page": 1,
+    "line": "03/24  BLUE BOTTLE COFFEE          -7.85",
+    "date": "2026-03-24",
+    "description": "BLUE BOTTLE COFFEE",
+    "amount": "-7.85"
+  },
+  {
+    "file": "statement_2026_03.pdf",
+    "page": 1,
+    "line": "03/28  RENT PAYMENT             -1850.00",
+    "date": "2026-03-28",
+    "description": "RENT PAYMENT",
+    "amount": "-1850.00"
+  },
+  {
+    "file": "receipt_2026_02_hardware.png",
+    "page": 1,
+    "line": null,
+    "date": "2026-02-11",
+    "description": "ACE HARDWARE #1182",
+    "amount": "-31.63"
+  },
+  {
+    "file": "receipt_2026_03_cafe.png",
+    "page": 1,
+    "line": null,
+    "date": "2026-03-19",
+    "description": "PENNY EVAL CAFE",
+    "amount": "-12.00"
+  }
+]

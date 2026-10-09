@@ -1,0 +1,42 @@
+{
+  "datasetVersion": "v1",
+  "seed": 20260101,
+  "files": [
+    {
+      "file": "statement_2026_01.pdf",
+      "kind": "statement",
+      "month": "2026-01",
+      "entries": 8,
+      "beginningBalance": "2400.00",
+      "endingBalance": "3499.23"
+    },
+    {
+      "file": "statement_2026_02.pdf",
+      "kind": "statement",
+      "month": "2026-02",
+      "entries": 8,
+      "beginningBalance": "3499.23",
+      "endingBalance": "4575.02"
+    },
+    {
+      "file": "statement_2026_03.pdf",
+      "kind": "statement",
+      "month": "2026-03",
+      "entries": 8,
+      "beginningBalance": "4575.02",
+      "endingBalance": "5635.84"
+    },
+    {
+      "file": "receipt_2026_02_hardware.png",
+      "kind": "receipt",
+      "month": "2026-02",
+      "entries": 1
+    },
+    {
+      "file": "receipt_2026_03_cafe.png",
+      "kind": "receipt",
+      "month": "2026-03",
+      "entries": 1
+    }
+  ]
+}

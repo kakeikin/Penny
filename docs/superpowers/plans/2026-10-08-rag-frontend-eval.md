@@ -2101,7 +2101,14 @@ git commit -m "chore: move playwright to devDependencies"
 The corpus is 3 text-layer bank statements (January–March 2026) and 2 PNG receipts. Everything is fake: the account number `0000123456789012` is masked to `****9012` by the pipeline, and every document says SYNTHETIC SAMPLE. One seeded generator writes:
 - the files;
 - `gold_transactions.json`: every statement line, with its date, amount and page;
-- `queries.json`: 20 questions across summary, transaction, document and no-data, each with its expected tools and exact expected amounts or text. Gold amounts are computed from the same rows that are printed, so the data cannot disagree with itself.
+- `queries.json`: 20 questions across summary, transaction, document and no-data. Each has its expected tools, its exact expected amounts or text, and `goldDocs`: every (file, page) that legitimately answers it, for retrieval scoring. Gold amounts are computed from the same rows that are printed, so the data cannot disagree with itself.
+
+Question design (from the Task 6 review):
+- No question needs arithmetic the tools don't return. The agent's system prompt forbids that, so "Q1 total" asks for each month instead, and Trader Joes asks for both purchases.
+- Every question names its month and year.
+- Receipt dates spell out the month (`Feb 11, 2026`), so they can't be read as D/M.
+- Document questions are worded so that `search_documents` is the natural tool.
+- Balances printed on two statements accept either file.
 
 **Files:**
 - Create: `eval/generate_dataset.py`, `eval/requirements.txt`, `eval/dataset/v1/*` (generated), `test/eval/test_eval_dataset.py`
@@ -2111,33 +2118,68 @@ The corpus is 3 text-layer bank statements (January–March 2026) and 2 PNG rece
 Create `test/eval/test_eval_dataset.py`:
 
 ````python
+import filecmp
 import json
 import os
+import sys
 from decimal import Decimal
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '../..'))
+BASE = os.path.join(ROOT, 'eval', 'dataset', 'v1')
+sys.path.insert(0, os.path.join(ROOT, 'eval'))
+sys.path.insert(0, os.path.join(ROOT, 'lambda', 'common'))
+
+import generate_dataset  # noqa: E402
+from penny_common.pdftext import extract_pdf_pages  # noqa: E402
+
 D = Decimal
 
 
+def _load(name):
+    with open(os.path.join(BASE, name)) as f:
+        return json.load(f)
+
+
 def test_committed_dataset_is_consistent():
-    base = os.path.join(ROOT, 'eval', 'dataset', 'v1')
-    queries = json.load(open(os.path.join(base, 'queries.json')))
-    manifest = json.load(open(os.path.join(base, 'manifest.json')))
-    gold = json.load(open(os.path.join(base, 'gold_transactions.json')))
+    queries, manifest, gold = _load('queries.json'), _load('manifest.json'), _load('gold_transactions.json')
     files = {f['file'] for f in manifest['files']}
-    assert all(os.path.exists(os.path.join(base, f)) for f in files)
+    assert all(os.path.exists(os.path.join(BASE, f)) for f in files)
     assert len({q['id'] for q in queries}) == len(queries) == 20
     for q in queries:
         assert q['expectTools'] or q['expectNoData']
-        assert q['goldDoc'] is None or q['goldDoc']['file'] in files
+        assert all(g['file'] in files for g in q['goldDocs'])
         assert all(D(a) > 0 for a in q['expectAmounts'])
     assert sum(f['entries'] for f in manifest['files']) == len(gold)
+
+
+def test_dataset_is_reproducible(tmp_path):
+    # PNG bytes depend on the Pillow version, so receipts are not regenerated here.
+    generate_dataset.build(out=str(tmp_path), render=lambda lines, path: None)
+    for name in os.listdir(BASE):
+        if name.endswith('.png'):
+            continue
+        assert filecmp.cmp(os.path.join(BASE, name), os.path.join(tmp_path, name), shallow=False), name
+
+
+def test_statement_pdfs_contain_every_gold_line_and_balances_chain():
+    gold, manifest = _load('gold_transactions.json'), _load('manifest.json')
+    statements = [f for f in manifest['files'] if f['kind'] == 'statement']
+    for f in statements:
+        with open(os.path.join(BASE, f['file']), 'rb') as fh:
+            text = extract_pdf_pages(fh.read())[0]['text']
+        lines = [g for g in gold if g['file'] == f['file']]
+        assert len(lines) == f['entries']
+        assert all(g['line'] in text for g in lines)
+        assert D(f['endingBalance']) == D(f['beginningBalance']) + sum(D(g['amount']) for g in lines)
+        assert f['beginningBalance'] in text and f['endingBalance'] in text
+    for prev, cur in zip(statements, statements[1:]):
+        assert prev['endingBalance'] == cur['beginningBalance']
 ````
 
 - [ ] **Step 2: Run it to verify it fails.**
 
 Run: `python -m pytest test/eval -q`
-Expected: FAIL with `FileNotFoundError` for `eval/dataset/v1/queries.json`.
+Expected: collection error `ModuleNotFoundError: No module named 'generate_dataset'`.
 
 - [ ] **Step 3: Implement and generate.**
 
@@ -2149,12 +2191,15 @@ Create `eval/generate_dataset.py`:
     python eval/generate_dataset.py          # writes eval/dataset/v1/
 
 Everything is fake: no real names, accounts, or merchants' real data. The output is committed,
-so eval runs are comparable; regenerate only when bumping DATASET_VERSION.
+so eval runs are comparable; regenerate only when bumping DATASET_VERSION. The PDFs and JSON are
+byte-reproducible (test/eval checks this); PNG bytes depend on the Pillow version and its bundled
+font (Pillow >= 10.1, see eval/requirements.txt), which is why the PNGs are committed too.
 """
 import json
 import os
 import random
 import sys
+from datetime import datetime
 from decimal import Decimal
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
@@ -2204,11 +2249,12 @@ RECEIPTS = [
 ]
 
 
-def receipt_lines(r: dict) -> list:
+def receipt_lines(r: dict) -> tuple:
     subtotal = sum(p for _, p in r['items'])
     total = subtotal + r['tax'] + (r['tip'] or 0)
-    y, m, d = r['date'].split('-')
-    lines = [r['merchant'], f'Date: {m}/{d}/{y}', '-' * 28]
+    # Spelled-out month: 02/11 would be ambiguous (Feb 11 vs 2 Nov) for a parser.
+    printed_date = datetime.strptime(r['date'], '%Y-%m-%d').strftime('%b %d, %Y')
+    lines = [r['merchant'], f'Date: {printed_date}', '-' * 28]
     lines += [f'{name:<20}{money(p):>8}' for name, p in r['items']]
     lines += ['-' * 28, f'{"Subtotal":<20}{money(subtotal):>8}', f'{"Tax":<20}{money(r["tax"]):>8}']
     if r['tip'] is not None:
@@ -2233,9 +2279,11 @@ def render_png(lines: list, path: str) -> None:
     img.save(path, optimize=False)
 
 
-def build():
+def build(out=OUT, render=None):
+    """Write the dataset to `out`. `render(lines, path)` draws a receipt PNG (default: Pillow)."""
+    render = render or render_png
     rng = random.Random(SEED)
-    os.makedirs(OUT, exist_ok=True)
+    os.makedirs(out, exist_ok=True)
     gold, files = [], []
     balance = OPENING_BALANCE
     month_spend, month_income = {}, {}
@@ -2256,7 +2304,7 @@ def build():
             gold.append({'file': fname, 'page': 1, 'line': line, 'date': f'{ym}-{day:02d}',
                          'description': desc, 'amount': money(amount)})
         text.append(f'Ending Balance                  {money(balance)}')
-        with open(os.path.join(OUT, fname), 'wb') as f:
+        with open(os.path.join(out, fname), 'wb') as f:
             f.write(make_pdf([text]))
         files.append({'file': fname, 'kind': 'statement', 'month': ym, 'entries': len(rows),
                       'beginningBalance': money(begin), 'endingBalance': money(balance)})
@@ -2265,7 +2313,7 @@ def build():
 
     for r in RECEIPTS:
         lines, total = receipt_lines(r)
-        render_png(lines, os.path.join(OUT, r['file']))
+        render(lines, os.path.join(out, r['file']))
         gold.append({'file': r['file'], 'page': 1, 'line': None, 'date': r['date'],
                      'description': r['merchant'], 'amount': money(-total)})
         files.append({'file': r['file'], 'kind': 'receipt', 'month': r['date'][:7], 'entries': 1})
@@ -2276,56 +2324,60 @@ def build():
     file_of = {f['month']: f for f in files if f['kind'] == 'statement'}
     q = []
 
-    def add(category, question, tools, amounts=(), gold_doc=None, text=None, no_data=False):
+    def add(category, question, tools, amounts=(), gold_docs=(), text=None, no_data=False):
+        # goldDocs: every (file, page) that legitimately answers the question, for retrieval scoring.
         q.append({'id': f'q{len(q) + 1:02d}', 'category': category, 'question': question,
                   'expectTools': list(tools), 'expectAmounts': list(amounts), 'expectText': text,
-                  'goldDoc': gold_doc, 'expectNoData': no_data})
+                  'goldDocs': list(gold_docs), 'expectNoData': no_data})
+    doc = lambda f: {'file': f, 'page': 1}
 
     for ym, (_, _, mname) in zip(['2026-01', '2026-02', '2026-03'], MONTHS):
-        add('summary', f'How much did I spend in total in {mname} 2026?', ['get_spending_summary'],
-            [money(month_spend[ym])])
+        add('summary', f'How much did I spend in total in {mname} 2026, including receipts?',
+            ['get_spending_summary'], [money(month_spend[ym])])
     add('summary', 'What was my total income in January 2026?', ['get_spending_summary'],
         [money(month_income['2026-01'])])
     add('summary', 'What was my net income (income minus spending) in March 2026?', ['get_spending_summary'],
         [money(month_income['2026-03'] - month_spend['2026-03'])])
-    add('summary', 'How much did I spend in total from January through March 2026?', ['get_spending_summary'],
-        [money(sum(month_spend.values()))])
+    add('summary', 'How much did I spend in each month from January through March 2026?',
+        ['get_spending_summary'], [money(month_spend[m]) for m in ('2026-01', '2026-02', '2026-03')])
 
     add('transaction', 'How much was my ABC Utilities bill in February 2026?', ['find_transactions'],
         [amt(by('ABC UTILITIES', '2026-02')[0])])
     add('transaction', 'How much was the Netflix charge in March 2026?', ['find_transactions'],
         [amt(by('NETFLIX.COM', '2026-03')[0])])
-    add('transaction', 'How much did I spend at Trader Joe\'s in January 2026, in total?', ['find_transactions'],
-        [money(sum(abs(D(g['amount'])) for g in by('TRADER JOES #552', '2026-01')))])
+    add('transaction', 'What were my two Trader Joes purchases in January 2026?', ['find_transactions'],
+        [amt(g) for g in by('TRADER JOES #552', '2026-01')])
     add('transaction', 'How much did I pay for gas at Shell in March 2026?', ['find_transactions'],
         [amt(by('SHELL OIL 57442', '2026-03')[0])])
     add('transaction', 'What was my largest single expense in February 2026?', ['find_transactions'],
         ['1850.00'])
-    add('transaction', 'How much did I spend at Ace Hardware?', ['find_transactions'],
+    add('transaction', 'How much did I spend at Ace Hardware in February 2026?', ['find_transactions'],
         [amt(by('ACE HARDWARE #1182', '2026-02')[0])])
 
     add('document', 'What is the ending balance on my February 2026 bank statement?', ['search_documents'],
-        [file_of['2026-02']['endingBalance']], {'file': 'statement_2026_02.pdf', 'page': 1})
+        [file_of['2026-02']['endingBalance']],
+        # February's ending balance is printed again as March's beginning balance.
+        [doc('statement_2026_02.pdf'), doc('statement_2026_03.pdf')])
     add('document', 'What was the beginning balance on my March 2026 statement?', ['search_documents'],
-        [file_of['2026-03']['beginningBalance']], {'file': 'statement_2026_03.pdf', 'page': 1})
+        [file_of['2026-03']['beginningBalance']], [doc('statement_2026_03.pdf'), doc('statement_2026_02.pdf')])
     add('document', 'What are the last four digits of the account number on my bank statements?',
-        ['search_documents'], [], {'file': 'statement_2026_01.pdf', 'page': 1}, text='9012')
-    add('document', 'How much tip did I leave at the cafe in March?', ['search_documents'],
-        ['2.00'], {'file': 'receipt_2026_03_cafe.png', 'page': 1})
-    add('document', 'What items did I buy at the hardware store?', ['search_documents'],
-        [], {'file': 'receipt_2026_02_hardware.png', 'page': 1}, text='Hammer')
-    add('document', 'What does my January statement show for the coffee shop?', ['search_documents'],
-        [amt(by('BLUE BOTTLE COFFEE', '2026-01')[0])], {'file': 'statement_2026_01.pdf', 'page': 1})
+        ['search_documents'], [], [doc(f'statement_2026_{m:02d}.pdf') for _, m, _ in MONTHS], text='9012')
+    add('document', 'How much tip did I leave on the cafe receipt in March 2026?', ['search_documents'],
+        ['2.00'], [doc('receipt_2026_03_cafe.png')])
+    add('document', 'Which items are listed on my hardware store receipt from February 2026?',
+        ['search_documents'], [], [doc('receipt_2026_02_hardware.png')], text='Hammer')
+    add('document', 'Search my January 2026 bank statement document: what line does it show for Blue Bottle Coffee?',
+        ['search_documents'], [amt(by('BLUE BOTTLE COFFEE', '2026-01')[0])], [doc('statement_2026_01.pdf')])
 
     add('no_data', 'How much did I spend in December 2025?', [], no_data=True)
     add('no_data', 'What is my credit score?', [], no_data=True)
 
     manifest = {'datasetVersion': DATASET_VERSION, 'seed': SEED, 'files': files}
     for name, obj in [('manifest.json', manifest), ('gold_transactions.json', gold), ('queries.json', q)]:
-        with open(os.path.join(OUT, name), 'w') as f:
+        with open(os.path.join(out, name), 'w') as f:
             json.dump(obj, f, indent=2)
             f.write('\n')
-    print(f'wrote {len(files)} files, {len(gold)} gold transactions, {len(q)} questions to {OUT}')
+    print(f'wrote {len(files)} files, {len(gold)} gold transactions, {len(q)} questions to {out}')
 
 
 if __name__ == '__main__':
@@ -2341,11 +2393,11 @@ pillow==12.0.0
 
 Run: `python eval/generate_dataset.py`
 Expected: `wrote 5 files, 26 gold transactions, 20 questions to …/eval/dataset/v1`.
-Run it again and confirm with `md5 eval/dataset/v1/*` that the output is byte-identical; it is deterministic.
+`test_dataset_is_reproducible` regenerates the PDFs and JSON into a temp dir and requires byte equality. PNGs depend on the Pillow version, so they are committed rather than compared.
 
 - [ ] **Step 4: Verify.**
 
-Run: `python -m pytest test/lambda test/eval -q` and expect `365 passed`.
+Run: `python -m pytest test/lambda test/eval -q` and expect `367 passed`.
 Open `eval/dataset/v1/receipt_2026_03_cafe.png` and check it is a legible receipt totalling 12.00.
 
 - [ ] **Step 5: Commit (user)**
@@ -2420,6 +2472,12 @@ def test_extra_tools_do_not_fail_tool_selection():
     assert metrics.score_answer(Q_SPEND, resp)['toolOk'] is True
 
 
+def test_amount_matching_is_whole_token():
+    q = {'id': 'q16', 'category': 'document', 'expectTools': [], 'expectAmounts': ['2.00']}
+    assert not metrics.score_answer(q, {'answer': 'The total was $12.00.'})['numericOk']
+    assert metrics.score_answer(q, {'answer': 'You tipped $2.00 on a $12.00 bill.'})['numericOk']
+
+
 def test_no_data_question_must_not_invent_figures():
     q = {'id': 'q19', 'category': 'no_data', 'expectTools': [], 'expectAmounts': [], 'expectNoData': True}
     assert metrics.score_answer(q, {'answer': "I don't have any data for December 2025."})['numericOk']
@@ -2436,9 +2494,10 @@ def test_expect_text_is_case_insensitive():
 
 
 def test_rank_and_retrieval_metrics():
-    gold = {'file': 'b.pdf', 'page': 1}
+    gold = [{'file': 'b.pdf', 'page': 1}]
     results = [{'fileName': 'a.pdf', 'page': 1}, {'fileName': 'b.pdf', 'page': 2}, {'fileName': 'b.pdf', 'page': 1}]
     assert metrics.rank_of(results, gold) == 3
+    assert metrics.rank_of(results, gold + [{'file': 'a.pdf', 'page': 1}]) == 1   # any gold doc counts
     assert metrics.rank_of([], gold) is None
     assert metrics.retrieval_metrics([1, 3, None, 6]) == {'n': 4, 'hit@3': 0.5, 'hit@5': 0.5,
                                                           'mrr': round((1 + 1 / 3 + 1 / 6) / 4, 3)}
@@ -2562,10 +2621,11 @@ def score_answer(q: dict, resp: dict) -> dict:
     }
 
 
-def rank_of(results: list, gold: dict):
-    """1-based rank of the first retrieved chunk from the gold file and page, else None."""
+def rank_of(results: list, gold_docs: list):
+    """1-based rank of the first retrieved chunk from any gold (file, page), else None."""
+    wanted = {(g['file'], g['page']) for g in gold_docs}
     for i, r in enumerate(results, start=1):
-        if r.get('fileName') == gold['file'] and int(r.get('page') or 0) == gold['page']:
+        if (r.get('fileName'), int(r.get('page') or 0)) in wanted:
             return i
     return None
 
@@ -2794,11 +2854,11 @@ def ask(adv, question):
 def retrieval(adv, queries):
     ranks = []
     for q in queries:
-        if not q.get('goldDoc'):
+        if not q.get('goldDocs'):
             continue
         ctx = adv.Context(SESSION, {}, deadline=time.monotonic() + 60)
         results = adv.search_documents({'query': q['question'], 'topK': 5}, ctx)
-        ranks.append(metrics.rank_of(results, q['goldDoc']))
+        ranks.append(metrics.rank_of(results, q['goldDocs']))
     return metrics.retrieval_metrics(ranks)
 
 
@@ -2926,7 +2986,7 @@ Apply to `.github/workflows/ci.yml`:
 
 - [ ] **Step 4: Verify.**
 
-Run: `python -m pytest test/lambda test/eval -q` and expect `378 passed`.
+Run: `python -m pytest test/lambda test/eval -q` and expect `381 passed`.
 Run: `python eval/run_eval.py --help` and expect usage text listing `{setup,run}`.
 
 - [ ] **Step 5: Commit (user)**
@@ -3041,5 +3101,5 @@ git commit -m "docs: rewrite README around architecture, cost and eval results"
   - ¥ on USD documents → Tasks 1 and 2.
 - **Found and fixed during Task 1 review:** `PUT /api/entries/{id}/confirm` wrote client lines without a balance check, dropped FX fields, and did not check the session. All three are fixed in Task 1.
 - **Test counts:**
-  - pytest: 303 → 364 (Task 1) → 365 (Task 6) → 378 (Task 7).
+  - pytest: 303 → 364 (Task 1) → 367 (Task 6) → 381 (Task 7).
   - jest: 20 → 21 (Task 1) → 36 (Task 3) → 43 (Task 4).

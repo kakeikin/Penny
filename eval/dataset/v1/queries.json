@@ -1,0 +1,319 @@
+[
+  {
+    "id": "q01",
+    "category": "summary",
+    "question": "How much did I spend in total in January 2026, including receipts?",
+    "expectTools": [
+      "get_spending_summary"
+    ],
+    "expectAmounts": [
+      "2100.77"
+    ],
+    "expectText": null,
+    "goldDocs": [],
+    "expectNoData": false
+  },
+  {
+    "id": "q02",
+    "category": "summary",
+    "question": "How much did I spend in total in February 2026, including receipts?",
+    "expectTools": [
+      "get_spending_summary"
+    ],
+    "expectAmounts": [
+      "2155.84"
+    ],
+    "expectText": null,
+    "goldDocs": [],
+    "expectNoData": false
+  },
+  {
+    "id": "q03",
+    "category": "summary",
+    "question": "How much did I spend in total in March 2026, including receipts?",
+    "expectTools": [
+      "get_spending_summary"
+    ],
+    "expectAmounts": [
+      "2151.18"
+    ],
+    "expectText": null,
+    "goldDocs": [],
+    "expectNoData": false
+  },
+  {
+    "id": "q04",
+    "category": "summary",
+    "question": "What was my total income in January 2026?",
+    "expectTools": [
+      "get_spending_summary"
+    ],
+    "expectAmounts": [
+      "3200.00"
+    ],
+    "expectText": null,
+    "goldDocs": [],
+    "expectNoData": false
+  },
+  {
+    "id": "q05",
+    "category": "summary",
+    "question": "What was my net income (income minus spending) in March 2026?",
+    "expectTools": [
+      "get_spending_summary"
+    ],
+    "expectAmounts": [
+      "1048.82"
+    ],
+    "expectText": null,
+    "goldDocs": [],
+    "expectNoData": false
+  },
+  {
+    "id": "q06",
+    "category": "summary",
+    "question": "How much did I spend in each month from January through March 2026?",
+    "expectTools": [
+      "get_spending_summary"
+    ],
+    "expectAmounts": [
+      "2100.77",
+      "2155.84",
+      "2151.18"
+    ],
+    "expectText": null,
+    "goldDocs": [],
+    "expectNoData": false
+  },
+  {
+    "id": "q07",
+    "category": "transaction",
+    "question": "How much was my ABC Utilities bill in February 2026?",
+    "expectTools": [
+      "find_transactions"
+    ],
+    "expectAmounts": [
+      "121.43"
+    ],
+    "expectText": null,
+    "goldDocs": [],
+    "expectNoData": false
+  },
+  {
+    "id": "q08",
+    "category": "transaction",
+    "question": "How much was the Netflix charge in March 2026?",
+    "expectTools": [
+      "find_transactions"
+    ],
+    "expectAmounts": [
+      "15.49"
+    ],
+    "expectText": null,
+    "goldDocs": [],
+    "expectNoData": false
+  },
+  {
+    "id": "q09",
+    "category": "transaction",
+    "question": "What were my two Trader Joes purchases in January 2026?",
+    "expectTools": [
+      "find_transactions"
+    ],
+    "expectAmounts": [
+      "43.66",
+      "64.39"
+    ],
+    "expectText": null,
+    "goldDocs": [],
+    "expectNoData": false
+  },
+  {
+    "id": "q10",
+    "category": "transaction",
+    "question": "How much did I pay for gas at Shell in March 2026?",
+    "expectTools": [
+      "find_transactions"
+    ],
+    "expectAmounts": [
+      "40.84"
+    ],
+    "expectText": null,
+    "goldDocs": [],
+    "expectNoData": false
+  },
+  {
+    "id": "q11",
+    "category": "transaction",
+    "question": "What was my largest single expense in February 2026?",
+    "expectTools": [
+      "find_transactions"
+    ],
+    "expectAmounts": [
+      "1850.00"
+    ],
+    "expectText": null,
+    "goldDocs": [],
+    "expectNoData": false
+  },
+  {
+    "id": "q12",
+    "category": "transaction",
+    "question": "How much did I spend at Ace Hardware in February 2026?",
+    "expectTools": [
+      "find_transactions"
+    ],
+    "expectAmounts": [
+      "31.63"
+    ],
+    "expectText": null,
+    "goldDocs": [],
+    "expectNoData": false
+  },
+  {
+    "id": "q13",
+    "category": "document",
+    "question": "What is the ending balance on my February 2026 bank statement?",
+    "expectTools": [
+      "search_documents"
+    ],
+    "expectAmounts": [
+      "4575.02"
+    ],
+    "expectText": null,
+    "goldDocs": [
+      {
+        "file": "statement_2026_02.pdf",
+        "page": 1
+      },
+      {
+        "file": "statement_2026_03.pdf",
+        "page": 1
+      }
+    ],
+    "expectNoData": false
+  },
+  {
+    "id": "q14",
+    "category": "document",
+    "question": "What was the beginning balance on my March 2026 statement?",
+    "expectTools": [
+      "search_documents"
+    ],
+    "expectAmounts": [
+      "4575.02"
+    ],
+    "expectText": null,
+    "goldDocs": [
+      {
+        "file": "statement_2026_03.pdf",
+        "page": 1
+      },
+      {
+        "file": "statement_2026_02.pdf",
+        "page": 1
+      }
+    ],
+    "expectNoData": false
+  },
+  {
+    "id": "q15",
+    "category": "document",
+    "question": "What are the last four digits of the account number on my bank statements?",
+    "expectTools": [
+      "search_documents"
+    ],
+    "expectAmounts": [],
+    "expectText": "9012",
+    "goldDocs": [
+      {
+        "file": "statement_2026_01.pdf",
+        "page": 1
+      },
+      {
+        "file": "statement_2026_02.pdf",
+        "page": 1
+      },
+      {
+        "file": "statement_2026_03.pdf",
+        "page": 1
+      }
+    ],
+    "expectNoData": false
+  },
+  {
+    "id": "q16",
+    "category": "document",
+    "question": "How much tip did I leave on the cafe receipt in March 2026?",
+    "expectTools": [
+      "search_documents"
+    ],
+    "expectAmounts": [
+      "2.00"
+    ],
+    "expectText": null,
+    "goldDocs": [
+      {
+        "file": "receipt_2026_03_cafe.png",
+        "page": 1
+      }
+    ],
+    "expectNoData": false
+  },
+  {
+    "id": "q17",
+    "category": "document",
+    "question": "Which items are listed on my hardware store receipt from February 2026?",
+    "expectTools": [
+      "search_documents"
+    ],
+    "expectAmounts": [],
+    "expectText": "Hammer",
+    "goldDocs": [
+      {
+        "file": "receipt_2026_02_hardware.png",
+        "page": 1
+      }
+    ],
+    "expectNoData": false
+  },
+  {
+    "id": "q18",
+    "category": "document",
+    "question": "Search my January 2026 bank statement document: what line does it show for Blue Bottle Coffee?",
+    "expectTools": [
+      "search_documents"
+    ],
+    "expectAmounts": [
+      "6.06"
+    ],
+    "expectText": null,
+    "goldDocs": [
+      {
+        "file": "statement_2026_01.pdf",
+        "page": 1
+      }
+    ],
+    "expectNoData": false
+  },
+  {
+    "id": "q19",
+    "category": "no_data",
+    "question": "How much did I spend in December 2025?",
+    "expectTools": [],
+    "expectAmounts": [],
+    "expectText": null,
+    "goldDocs": [],
+    "expectNoData": true
+  },
+  {
+    "id": "q20",
+    "category": "no_data",
+    "question": "What is my credit score?",
+    "expectTools": [],
+    "expectAmounts": [],
+    "expectText": null,
+    "goldDocs": [],
+    "expectNoData": true
+  }
+]
