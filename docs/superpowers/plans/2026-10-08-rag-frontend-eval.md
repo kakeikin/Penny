@@ -2411,17 +2411,31 @@ git commit -m "feat: deterministic synthetic eval corpus with gold answers"
 
 ### Task 7: Eval metrics and runner
 
-`metrics.py` is pure and fully unit-tested. `run_eval.py` has two commands:
-- **`setup`** uploads the corpus to session `eval-v1` through the public API. It waits for parsing until the counts are stable, confirms the entries, then waits until IndexLambda has backfilled every `chunkKey`. Re-running it is safe, because files already uploaded are skipped.
-- **`run`** imports `lambda/advisor/index.py` with the deployed function's environment, read via `lambda:GetFunctionConfiguration`. It calls the real handler once per question and model, then scores the answers. It also scores:
-  - retrieval, through the agent's own `search_documents` with the same session filter;
-  - evidence linking, from `GET /api/entries` in the eval session.
+`metrics.py` is pure and fully unit-tested. Its rules, from the Task 7 review:
+- Every rate is reported with its denominator.
+- A check that doesn't apply to a question is excluded from that rate, so no question passes for free. For example, tool selection skips questions that expect no tool, and citation validity only counts answers that carry citations.
+- Errored or truncated answers fail every check that applies to them.
+- An answer that lists far more amounts than were asked for fails numeric exactness.
+- No-data questions also reject `$2,100`-style figures.
 
-  It writes `eval/results/run-<timestamp>.json` and `docs/evaluation-results.md`.
+`run_eval.py` has two commands:
+- **`setup`:**
+  - Creates a private session `eval-v1-<random>`, kept in `eval/.state/session.json`, which is gitignored. Nobody else can add entries to the eval ledger.
+  - Uploads each file at most once, recorded in that state file, so it is safe to re-run while parsing is still in progress.
+  - Waits for parsing to finish.
+  - **Stops** if entry counts differ from the manifest, or if any entry is `DUPLICATE_SUSPECT`.
+  - Confirms the entries, never acknowledging unconverted FX, then waits until IndexLambda has backfilled every `chunkKey`.
+- **`run`:**
+  - **Refuses to score** unless the confirmed ledger equals the gold transactions exactly and every evidence item is indexed.
+  - Imports `lambda/advisor/index.py` with the deployed function's environment (`lambda:GetFunctionConfiguration`).
+  - Calls the real handler once per question and model, and fails fast if a model's first call errors (wrong ID or no access).
+  - Keeps per-question ids and counts from the handler's own log lines.
+  - Scores retrieval through the agent's own `search_documents`, and evidence linking from the eval session's entries.
+  - Always writes `eval/results/run-<timestamp>.json`. It writes `docs/evaluation-results.md` **only for a full, error-free run**, with the method and caveats rendered into the file.
 
 **Files:**
 - Create: `eval/metrics.py`, `eval/run_eval.py`, `eval/results/.gitkeep`, `test/eval/test_eval_metrics.py`
-- Modify: `.github/workflows/ci.yml`
+- Modify: `.github/workflows/ci.yml`, `.gitignore`
 
 - [ ] **Step 1: Write the failing test.**
 
@@ -2436,10 +2450,14 @@ ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '../..'))
 sys.path.insert(0, os.path.join(ROOT, 'eval'))
 
 import metrics  # noqa: E402
+import run_eval  # noqa: E402
 
 D = Decimal
 Q_SPEND = {'id': 'q01', 'category': 'summary', 'expectTools': ['get_spending_summary'],
            'expectAmounts': ['2100.77'], 'expectText': None, 'expectNoData': False}
+Q_NODATA = {'id': 'q19', 'category': 'no_data', 'expectTools': [], 'expectAmounts': [], 'expectNoData': True}
+GOOD = {'answer': 'You spent $2,100.77 in January [S1].', 'toolsUsed': ['get_spending_summary'],
+        'citations': [{'ref': 'S1'}], 'invalidCitations': 0, 'evidenceStatus': 'supported', 'truncated': False}
 
 
 def test_amounts_in_ignores_years_days_and_percentages_without_cents():
@@ -2452,24 +2470,39 @@ def test_amounts_in_handles_signs_and_symbols():
     assert metrics.amounts_in(None) == set()
 
 
-def test_score_answer_all_checks_pass():
-    resp = {'answer': 'You spent $2,100.77 in January [S1].', 'toolsUsed': ['get_spending_summary'],
-            'citations': [{'ref': 'S1'}], 'invalidCitations': 0, 'evidenceStatus': 'supported', 'truncated': False}
+def test_good_answer_passes_every_applicable_check():
+    s = metrics.score_answer(Q_SPEND, GOOD)
+    assert s == {'id': 'q01', 'category': 'summary', 'ok': True, 'truncated': False, 'toolOk': True,
+                 'numericOk': True, 'textOk': None, 'citationsValid': True, 'moneyCited': True}
+    assert metrics.passed(s)
+
+
+def test_wrong_number_and_tool_fail():
+    resp = {'answer': 'About $2,000.00.', 'toolsUsed': ['find_transactions'], 'citations': []}
     s = metrics.score_answer(Q_SPEND, resp)
-    assert s == {'id': 'q01', 'category': 'summary', 'toolOk': True, 'numericOk': True,
-                 'citationsValid': True, 'supported': True, 'cited': True, 'truncated': False}
+    assert (s['toolOk'], s['numericOk'], s['moneyCited']) == (False, False, False)
+    assert s['citationsValid'] is None                       # no citations: not counted either way
+    assert not metrics.passed(s)
 
 
-def test_score_answer_wrong_number_and_tool():
-    resp = {'answer': 'About $2,000.00.', 'toolsUsed': ['find_transactions'], 'citations': [],
-            'invalidCitations': 1, 'evidenceStatus': 'unsupported'}
-    s = metrics.score_answer(Q_SPEND, resp)
-    assert (s['toolOk'], s['numericOk'], s['citationsValid'], s['supported'], s['cited']) == (False,) * 5
+def test_errors_and_truncation_fail_instead_of_passing():
+    err = metrics.score_answer(Q_NODATA, {}, ok=False)
+    assert err['numericOk'] is False and not metrics.passed(err)
+    assert metrics.score_answer(Q_SPEND, {}, ok=False)['toolOk'] is False
+    cut = metrics.score_answer(Q_SPEND, {**GOOD, 'truncated': True})
+    assert cut['numericOk'] is False and not metrics.passed(cut)
 
 
-def test_extra_tools_do_not_fail_tool_selection():
-    resp = {'answer': '2100.77', 'toolsUsed': ['search_documents', 'get_spending_summary']}
-    assert metrics.score_answer(Q_SPEND, resp)['toolOk'] is True
+def test_extra_tools_are_allowed_but_no_tool_questions_are_excluded():
+    assert metrics.score_answer(Q_SPEND, {**GOOD, 'toolsUsed': ['search_documents', 'get_spending_summary']})['toolOk']
+    assert metrics.score_answer(Q_NODATA, {'answer': 'No data.'})['toolOk'] is None
+
+
+def test_shotgun_answers_fail_numeric_exactness():
+    q = {'id': 'q11', 'category': 'transaction', 'expectTools': [], 'expectAmounts': ['1850.00']}
+    listing = 'Your February expenses: 44.10, 121.43, 15.49, 41.76, 37.27, 14.16 and 1850.00.'
+    assert not metrics.score_answer(q, {'answer': listing})['numericOk']
+    assert metrics.score_answer(q, {'answer': 'Rent, $1,850.00, out of $2,155.84 total.'})['numericOk']
 
 
 def test_amount_matching_is_whole_token():
@@ -2479,18 +2512,17 @@ def test_amount_matching_is_whole_token():
 
 
 def test_no_data_question_must_not_invent_figures():
-    q = {'id': 'q19', 'category': 'no_data', 'expectTools': [], 'expectAmounts': [], 'expectNoData': True}
-    assert metrics.score_answer(q, {'answer': "I don't have any data for December 2025."})['numericOk']
-    assert metrics.score_answer(q, {'answer': 'You spent $0.00 in December 2025.'})['numericOk']
-    assert not metrics.score_answer(q, {'answer': 'You spent $312.40.'})['numericOk']
+    assert metrics.score_answer(Q_NODATA, {'answer': "I don't have any data for December 2025."})['numericOk']
+    assert metrics.score_answer(Q_NODATA, {'answer': 'You spent $0.00 in December 2025.'})['numericOk']
+    assert not metrics.score_answer(Q_NODATA, {'answer': 'You spent $312.40.'})['numericOk']
+    assert not metrics.score_answer(Q_NODATA, {'answer': 'Roughly $2,100 that month.'})['numericOk']
 
 
-def test_expect_text_is_case_insensitive():
-    q = {'id': 'q15', 'category': 'document', 'expectTools': [], 'expectAmounts': [], 'expectText': '9012'}
-    assert metrics.score_answer(q, {'answer': 'It ends in ****9012 [D1].'})['numericOk']
-    q2 = {**q, 'expectText': 'Hammer'}
-    assert metrics.score_answer(q2, {'answer': 'A claw hammer, screws and tape.'})['numericOk']
-    assert not metrics.score_answer(q2, {'answer': 'Screws.'})['numericOk']
+def test_text_match_is_its_own_case_insensitive_check():
+    q = {'id': 'q17', 'category': 'document', 'expectTools': [], 'expectAmounts': [], 'expectText': 'Hammer'}
+    s = metrics.score_answer(q, {'answer': 'A claw hammer, screws and tape.'})
+    assert (s['textOk'], s['numericOk']) == (True, None)
+    assert not metrics.score_answer(q, {'answer': 'Screws.'})['textOk']
 
 
 def test_rank_and_retrieval_metrics():
@@ -2511,65 +2543,91 @@ def _entry(date, amount, page=1, text=None):
     return e
 
 
+GOLD = [
+    {'file': 's.pdf', 'page': 1, 'line': '01/09  ABC UTILITIES  -90.91', 'date': '2026-01-09', 'amount': '-90.91'},
+    {'file': 's.pdf', 'page': 1, 'line': '01/14  NETFLIX.COM  -15.49', 'date': '2026-01-14', 'amount': '-15.49'},
+    {'file': 's.pdf', 'page': 1, 'line': '01/28  RENT PAYMENT  -1850.00', 'date': '2026-01-28', 'amount': '-1850.00'},
+    {'file': 'r.png', 'page': 1, 'line': None, 'date': '2026-02-11', 'amount': '-31.63'},   # receipt
+]
+
+
 def test_evidence_metrics_matches_by_date_and_amount():
-    gold = [
-        {'file': 's.pdf', 'page': 1, 'line': '01/09  ABC UTILITIES  -90.91', 'date': '2026-01-09', 'amount': '-90.91'},
-        {'file': 's.pdf', 'page': 1, 'line': '01/14  NETFLIX.COM  -15.49', 'date': '2026-01-14', 'amount': '-15.49'},
-        {'file': 's.pdf', 'page': 1, 'line': '01/28  RENT PAYMENT  -1850.00', 'date': '2026-01-28', 'amount': '-1850.00'},
-        {'file': 'r.png', 'page': 1, 'line': None, 'date': '2026-02-11', 'amount': '-31.63'},   # receipt: skipped
-    ]
     entries = [
         _entry('2026-01-09', '90.91', text='01/09 ABC UTILITIES -90.91'),       # whitespace differs: ok
         _entry('2026-01-14', '15.49', page=2, text='01/14  NETFLIX.COM  -15.49'),  # wrong page
         _entry('2026-02-11', '31.63'),
     ]
-    out = metrics.evidence_metrics(gold, entries)
+    out = metrics.evidence_metrics(GOLD, entries)
     assert out == {'n': 3, 'booked': 2, 'bookedRate': 0.667, 'evidenceCorrect': 1, 'evidenceAccuracy': 0.5}
 
 
 def test_each_entry_matches_at_most_one_gold_line():
     gold = [{'page': 1, 'line': 'a 5.00', 'date': '2026-01-02', 'amount': '-5.00'},
             {'page': 1, 'line': 'b 5.00', 'date': '2026-01-02', 'amount': '-5.00'}]
-    out = metrics.evidence_metrics(gold, [_entry('2026-01-02', '5.00', text='a 5.00')])
-    assert out['booked'] == 1
+    assert metrics.evidence_metrics(gold, [_entry('2026-01-02', '5.00', text='a 5.00')])['booked'] == 1
 
 
-def test_percentile_and_summarize():
+def test_ledger_must_equal_gold_exactly():
+    exact = [_entry(g['date'], g['amount'].lstrip('-')) for g in GOLD]
+    assert metrics.ledger_matches_gold(GOLD, exact)['ok']
+    out = metrics.ledger_matches_gold(GOLD, exact + [_entry('2026-02-12', '1.00')])
+    assert out == {'ok': False, 'expected': 4, 'booked': 5, 'missing': 0, 'extra': 1}
+    assert metrics.ledger_matches_gold(GOLD, exact[1:])['missing'] == 1
+
+
+def test_percentile_and_summarize_show_denominators():
     assert metrics.percentile([], 50) is None
     assert metrics.percentile([5, 1, 3, 2, 4], 50) == 3
     assert metrics.percentile(list(range(1, 21)), 95) == 19
-    scores = [{'toolOk': True, 'numericOk': True, 'citationsValid': True, 'supported': True, 'truncated': False},
-              {'toolOk': False, 'numericOk': True, 'citationsValid': True, 'supported': False, 'truncated': True}]
-    out = metrics.summarize(scores, ['0.004000', '0.002000'], [2000, 3000])
-    assert out['toolSelectionAccuracy'] == 0.5 and out['numericExactness'] == 1.0
-    assert out['meanCostUsd'] == '0.003000' and out['totalCostUsd'] == '0.006000'
-    assert (out['latencyP50Ms'], out['latencyP95Ms']) == (2000, 3000)
+    scores = [metrics.score_answer(Q_SPEND, GOOD), metrics.score_answer(Q_NODATA, {}, ok=False)]
+    out = metrics.summarize(scores, ['0.004000', None], [2000])
+    assert out['passRate'] == {'rate': 0.5, 'passed': 1, 'n': 2}
+    assert out['toolSelection'] == {'rate': 1.0, 'passed': 1, 'n': 1}      # q19 expects no tool: excluded
+    assert out['errors'] == 1 and out['unpricedAnswers'] == 1
+    assert out['meanCostUsd'] == '0.004000' and (out['latencyP50Ms'], out['latencyP95Ms']) == (2000, 2000)
+    assert metrics.summarize([], [], [])['meanCostUsd'] is None
 
 
 def test_run_eval_maps_upload_keys_to_dataset_files():
-    import run_eval
-    key = 'uploads/demo-eval-v1/0f8fad5b-d9cb-469f-a165-70867728950e-statement_2026_01.pdf'
+    key = 'uploads/demo-eval-v1-ab12/0f8fad5b-d9cb-469f-a165-70867728950e-statement_2026_01.pdf'
     assert run_eval.file_of({'fileKey': key}) == 'statement_2026_01.pdf'
     assert run_eval.file_of({}) == ''
 
 
-def test_run_eval_report_renders_every_section():
-    import run_eval
-    summary = metrics.summarize([{'toolOk': True, 'numericOk': True, 'citationsValid': True,
-                                  'supported': True, 'truncated': False}], ['0.004000'], [2400])
-    q = {'id': 'q01', 'category': 'summary', 'toolOk': True, 'numericOk': True}
+def test_run_eval_reads_ids_and_counts_from_handler_logs():
+    captured = '\n'.join(['not json',
+                          '{"event": "tool_failed", "tool": "search_documents", "errorType": "ReadTimeoutError"}',
+                          '{"event": "advisor_answered", "rounds": 2, "toolErrors": 1, "stopReason": "end_turn",'
+                          ' "retrievalMs": 300, "latencyMs": 2400, "inputTokens": 3000}'])
+    out = run_eval._log_fields(captured)
+    assert out == {'errors': [{'event': 'tool_failed', 'tool': 'search_documents', 'errorType': 'ReadTimeoutError'}],
+                   'rounds': 2, 'toolErrors': 1, 'stopReason': 'end_turn', 'retrievalMs': 300, 'latencyMs': 2400}
+
+
+def test_run_eval_report_renders_every_section_with_denominators():
+    rows = [{**metrics.score_answer(Q_SPEND, GOOD), 'pass': True},
+            {**metrics.score_answer(Q_SPEND, {'answer': 'About $2,000.00.'}), 'pass': False}]
+    summary = metrics.summarize(rows, ['0.004000', '0.002000'], [2400, 3100])
     report = {'startedAt': '2026-10-08T00:00:00+00:00', 'datasetVersion': 'v1', 'embedDimensions': '512',
               'vectorIndex': 'penny-docs-v1', 'chunkerVersion': '1',
-              'retrieval': metrics.retrieval_metrics([1, 2]),
+              'manifest': [{'kind': 'statement'}] * 3 + [{'kind': 'receipt'}] * 2,
+              'ledger': {'ok': True, 'expected': 26, 'booked': 26, 'missing': 0, 'extra': 0},
+              'retrieval': metrics.retrieval_metrics([1, 2, None, 1]),
               'evidence': {'n': 24, 'booked': 24, 'bookedRate': 1.0, 'evidenceCorrect': 23, 'evidenceAccuracy': 0.958},
-              'models': {'haiku-4.5': {'modelId': 'h', 'summary': summary, 'questions': [q]},
-                         'sonnet-4.6': {'modelId': 's', 'summary': summary,
-                                        'questions': [{**q, 'numericOk': False}]}}}
+              'models': {'haiku-4.5': {'modelId': 'h', 'summary': summary, 'questions': rows},
+                         'sonnet-4.6': {'modelId': 's', 'summary': summary, 'questions': rows}}}
     md = run_eval.render(report, 'eval/results/run-x.json')
-    assert '| Numeric exactness | 100% | 100% |' in md
-    assert '| Mean cost / question | $0.004000 | $0.004000 |' in md
-    assert 'hit@3 100%' in md and '23/24' in md
-    assert '**haiku-4.5:** none' in md and '**sonnet-4.6:** q01 (summary)' in md
+    assert '| Questions fully passed | 50% (1/2) | 50% (1/2) |' in md
+    assert '| Mean cost / question | $0.003000 | $0.003000 |' in md
+    assert '3 synthetic statements, 2 synthetic receipts, 26 gold transactions, 2 questions' in md
+    assert 'hit@3 75% (3/4)' in md and '23/24' in md
+    assert '**haiku-4.5:** q01 (summary)' in md
+    assert 'one question is 50 percentage points' in md and 'not through API Gateway' in md
+
+
+def test_zero_figures_are_not_money_to_cite():
+    s = metrics.score_answer(Q_NODATA, {'answer': 'You spent $0 in December 2025.'})
+    assert s['numericOk'] and s['moneyCited'] is None
 ````
 
 - [ ] **Step 2: Run it to verify it fails.**
@@ -2582,13 +2640,21 @@ Expected: collection error `ModuleNotFoundError: No module named 'metrics'`.
 Create `eval/metrics.py`:
 
 ````python
-"""Deterministic eval metrics (no LLM judge). Pure functions: no AWS, no network."""
+"""Deterministic eval metrics (no LLM judge). Pure functions: no AWS, no network.
+
+Every rate is reported with its denominator. A check that does not apply to a question is None
+and is left out of that rate (e.g. tool selection for questions that expect no tool), so no
+question passes a check for free. An answer that errored or was truncated fails every quality
+check that applies to it.
+"""
 import re
 from decimal import Decimal
 
 # 1,234.56 / 1234.56 / 15.49: two-decimal amounts only, so years and day numbers never count.
 _AMOUNT = re.compile(r'(?<![\d.,])\d{1,3}(?:,\d{3})+\.\d{2}(?![\d])|(?<![\d.,])\d+\.\d{2}(?![\d])')
+_DOLLARS = re.compile(r'\$\s?(\d[\d,]*(?:\.\d+)?)')        # "$2,100" or "$0" in no-data answers
 _WS = re.compile(r'\s+')
+MAX_EXTRA_FACTOR = 2      # more than 2x as many unexpected amounts as expected ones = a shotgun answer
 
 
 def amounts_in(text: str) -> set:
@@ -2596,29 +2662,50 @@ def amounts_in(text: str) -> set:
     return {Decimal(m.group(0).replace(',', '')) for m in _AMOUNT.finditer(text or '')}
 
 
-def score_answer(q: dict, resp: dict) -> dict:
-    """Per-question checks for one advisor response."""
+def dollar_figures_in(text: str) -> set:
+    """Every $-prefixed figure, with or without cents."""
+    return {Decimal(m.group(1).replace(',', '')) for m in _DOLLARS.finditer(text or '')}
+
+
+def score_answer(q: dict, resp: dict, ok: bool = True) -> dict:
+    """Per-question checks for one advisor response; None means "does not apply"."""
     answer = resp.get('answer') or ''
     found = amounts_in(answer)
     expected = {Decimal(a) for a in q.get('expectAmounts') or []}
     tools = set(resp.get('toolsUsed') or [])
+    citations = resp.get('citations') or []
+    truncated = bool(resp.get('truncated'))
+    usable = ok and not truncated
+
+    numeric = None
     if q.get('expectNoData'):
-        numeric = not any(a != 0 for a in found)            # "no data" answers must not invent figures
-    else:
-        numeric = expected <= found
-    text_ok = True
+        numeric = usable and not any(a != 0 for a in found | dollar_figures_in(answer))
+    elif expected:
+        extra = found - expected
+        numeric = usable and expected <= found and len(extra) <= MAX_EXTRA_FACTOR * len(expected)
+    text = None
     if q.get('expectText'):
-        text_ok = q['expectText'].lower() in answer.lower()
+        text = usable and q['expectText'].lower() in answer.lower()
+    has_money = any(a != 0 for a in found | dollar_figures_in(answer))   # "$0" is not a figure to cite
     return {
         'id': q['id'],
         'category': q['category'],
-        'toolOk': set(q.get('expectTools') or []) <= tools,
-        'numericOk': numeric and text_ok,
-        'citationsValid': resp.get('invalidCitations', 0) == 0,
-        'supported': resp.get('evidenceStatus') == 'supported',
-        'cited': bool(resp.get('citations')),
-        'truncated': bool(resp.get('truncated')),
+        'ok': ok,
+        'truncated': truncated,
+        'toolOk': (ok and set(q['expectTools']) <= tools) if q.get('expectTools') else None,
+        'numericOk': numeric,
+        'textOk': text,
+        # Of the answers that carry citations, how many had none removed by the validator.
+        'citationsValid': (resp.get('invalidCitations', 0) == 0) if (usable and citations) else None,
+        # Of the answers that state money, how many cite at least one source.
+        'moneyCited': bool(citations) if (usable and has_money) else None,
     }
+
+
+def passed(score: dict) -> bool:
+    """A question passes when every check that applies to it passes."""
+    checks = [score[k] for k in ('toolOk', 'numericOk', 'textOk') if score[k] is not None]
+    return score['ok'] and not score['truncated'] and all(checks)
 
 
 def rank_of(results: list, gold_docs: list):
@@ -2648,10 +2735,25 @@ def _entry_amount(entry: dict) -> Decimal:
                Decimal('0'))
 
 
+def ledger_matches_gold(gold: list, entries: list) -> dict:
+    """Do the booked entries equal the gold transactions exactly (as a multiset of date, amount)?"""
+    want = sorted((g['date'], abs(Decimal(g['amount']))) for g in gold)
+    have = sorted((e.get('date'), _entry_amount(e)) for e in entries)
+    missing, extra = list(want), []
+    for item in have:
+        if item in missing:
+            missing.remove(item)
+        else:
+            extra.append(item)
+    return {'ok': not missing and not extra, 'expected': len(want), 'booked': len(have),
+            'missing': len(missing), 'extra': len(extra)}
+
+
 def evidence_metrics(gold: list, entries: list) -> dict:
     """Match each gold statement line to the booked entry with the same date and amount, then
-    check that the entry's evidence quotes that line on the right page. Receipts (line None)
-    are skipped: image evidence is only checked against Claude's own transcript."""
+    check that the entry's evidence quotes that whole line on the right page. Receipts (line None)
+    are skipped: image evidence is only checked against Claude's own transcript. Requiring the
+    whole printed line is conservative: a correct but partial quote counts as a miss."""
     pool = list(entries)
     matched = correct = 0
     checked = [g for g in gold if g.get('line')]
@@ -2679,19 +2781,30 @@ def percentile(values: list, p: float):
     return ordered[int(k) - 1]
 
 
+def _rate(scores: list, key: str) -> dict:
+    applicable = [s[key] for s in scores if s[key] is not None]
+    return {'rate': round(sum(applicable) / len(applicable), 3) if applicable else None,
+            'passed': sum(applicable), 'n': len(applicable)}
+
+
 def summarize(scores: list, costs: list, latencies_ms: list) -> dict:
+    """costs: estCostUsd strings, or None when the model is unpriced; latencies of ok answers only."""
     n = len(scores)
-    rate = lambda key: round(sum(1 for s in scores if s[key]) / n, 3) if n else None
-    total = sum((Decimal(c) for c in costs), Decimal('0'))
+    priced = [Decimal(c) for c in costs if c is not None]
+    total = sum(priced, Decimal('0'))
     return {
         'n': n,
-        'toolSelectionAccuracy': rate('toolOk'),
-        'numericExactness': rate('numericOk'),
-        'citationValidity': rate('citationsValid'),
-        'supportedRate': rate('supported'),
-        'truncatedRate': rate('truncated'),
-        'meanCostUsd': f'{total / n:.6f}' if n else None,
-        'totalCostUsd': f'{total:.6f}',
+        'errors': sum(1 for s in scores if not s['ok']),
+        'truncated': sum(1 for s in scores if s['truncated']),
+        'passRate': _rate([{**s, 'pass': passed(s)} for s in scores], 'pass'),
+        'toolSelection': _rate(scores, 'toolOk'),
+        'numericExactness': _rate(scores, 'numericOk'),
+        'textMatch': _rate(scores, 'textOk'),
+        'citationValidity': _rate(scores, 'citationsValid'),
+        'moneyCited': _rate(scores, 'moneyCited'),
+        'meanCostUsd': f'{total / len(priced):.6f}' if priced else None,
+        'totalCostUsd': f'{total:.6f}' if priced else None,
+        'unpricedAnswers': sum(1 for c in costs if c is None),
         'latencyP50Ms': percentile(latencies_ms, 50),
         'latencyP95Ms': percentile(latencies_ms, 95),
     }
@@ -2703,12 +2816,16 @@ Create `eval/run_eval.py`:
 """Run Penny's deterministic eval against the deployed stack (manual; needs AWS credentials).
 
     python eval/run_eval.py setup            # once: upload + confirm the synthetic corpus (~$0.10)
-    python eval/run_eval.py run              # 20 questions x 2 models (~$0.40), writes results
+    python eval/run_eval.py run              # 20 questions x 2 models (~$1), writes results
 
-Everything lives in its own demo session (X-Session-Id: eval-v1), isolated from owner data.
+Setup creates a private demo session (`eval-v1-<random>`, saved in eval/.state/, which is
+gitignored) so nobody else can add entries to the eval ledger. `run` refuses to score unless
+the booked ledger equals the gold transactions and every evidence item is indexed.
+
 `run` imports the real AdvisorLambda code and calls its handler locally with the deployed
 function's configuration, so both models run the same agent against the same data; only
-ADVISOR_MODEL_ID changes. Latency is measured from this machine, not inside Lambda.
+ADVISOR_MODEL_ID changes. Latency is measured from this machine calling Bedrock directly.
+docs/evaluation-results.md is only written by a full, error-free run.
 """
 import argparse
 import contextlib
@@ -2716,6 +2833,7 @@ import importlib.util
 import io
 import json
 import os
+import secrets
 import sys
 import time
 from datetime import datetime, timezone
@@ -2727,15 +2845,15 @@ ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import metrics  # noqa: E402
 
-SESSION = 'eval-v1'
 STACK = 'FinanceStack'
 REGION = 'us-east-1'
 DATASET = os.path.join(ROOT, 'eval', 'dataset', 'v1')
+STATE = os.path.join(ROOT, 'eval', '.state', 'session.json')
 RESULTS_DIR = os.path.join(ROOT, 'eval', 'results')
 REPORT = os.path.join(ROOT, 'docs', 'evaluation-results.md')
 MODELS = {
     'haiku-4.5':  'us.anthropic.claude-haiku-4-5-20251001-v1:0',
-    'sonnet-4.6': 'us.anthropic.claude-sonnet-4-6',
+    'sonnet-4.6': 'us.anthropic.claude-sonnet-4-6',      # the model ParseLambda already uses
 }
 CONTENT_TYPES = {'pdf': 'application/pdf', 'png': 'image/png', 'jpg': 'image/jpeg'}
 POLL_S = 10
@@ -2746,19 +2864,44 @@ def load(name):
         return json.load(f)
 
 
+def load_state(create=False) -> dict:
+    if os.path.exists(STATE):
+        with open(STATE) as f:
+            return json.load(f)
+    if not create:
+        sys.exit('no eval session yet: run `python eval/run_eval.py setup` first')
+    state = {'session': f'eval-v1-{secrets.token_hex(8)}', 'uploaded': {}}
+    save_state(state)
+    return state
+
+
+def save_state(state):
+    os.makedirs(os.path.dirname(STATE), exist_ok=True)
+    with open(STATE, 'w') as f:
+        json.dump(state, f, indent=2)
+
+
 def site_url() -> str:
     outputs = boto3.client('cloudformation', region_name=REGION).describe_stacks(StackName=STACK)['Stacks'][0]['Outputs']
     return next(o['OutputValue'] for o in outputs if o['OutputKey'] == 'SiteUrl').rstrip('/')
 
 
-def api(site, method, path, body=None):
-    r = requests.request(method, f'{site}{path}', json=body, timeout=30, headers={'X-Session-Id': SESSION})
-    r.raise_for_status()
-    return r.json()
+class Api:
+    def __init__(self, site, session):
+        self.site, self.session = site, session
 
+    def call(self, method, path, body=None):
+        r = requests.request(method, f'{self.site}{path}', json=body, timeout=30,
+                             headers={'X-Session-Id': self.session})
+        if not r.ok:
+            raise RuntimeError(f'{method} {path} -> {r.status_code}: {r.text[:200]}')
+        return r.json()
 
-def session_entries(site):
-    return api(site, 'GET', '/api/entries?status=PENDING') + api(site, 'GET', '/api/entries')
+    def pending(self):          # PENDING and DUPLICATE_SUSPECT
+        return self.call('GET', '/api/entries?status=PENDING')
+
+    def confirmed(self):
+        return self.call('GET', '/api/entries')
 
 
 def file_of(entry) -> str:
@@ -2768,50 +2911,64 @@ def file_of(entry) -> str:
 # ── setup ────────────────────────────────────────────────────────────────────
 
 def setup(site):
+    state = load_state(create=True)
+    api = Api(site, state['session'])
     manifest = load('manifest.json')
-    have = {file_of(e) for e in session_entries(site)}
+    print(f'eval session: {state["session"]}')
     for f in manifest['files']:
-        if f['file'] in have:
+        if f['file'] in state['uploaded']:          # never upload twice, even while still parsing
             print(f'{f["file"]}: already uploaded')
             continue
         ext = f['file'].rsplit('.', 1)[-1]
-        up = api(site, 'POST', '/api/upload', {'filename': f['file'], 'contentType': CONTENT_TYPES[ext],
-                                               'sessionId': SESSION})
+        up = api.call('POST', '/api/upload', {'filename': f['file'], 'contentType': CONTENT_TYPES[ext],
+                                              'sessionId': state['session']})
         with open(os.path.join(DATASET, f['file']), 'rb') as fh:
             requests.put(up['uploadUrl'], data=fh.read(), headers={'Content-Type': CONTENT_TYPES[ext]},
                          timeout=60).raise_for_status()
+        state['uploaded'][f['file']] = up['key']
+        save_state(state)
         print(f'{f["file"]}: uploaded')
 
     # Parsing runs asynchronously; wait until every file has entries and the count stops changing.
     deadline, last = time.monotonic() + 600, None
     while True:
-        entries = session_entries(site)
+        entries = api.pending() + api.confirmed()
         counts = {f['file']: sum(1 for e in entries if file_of(e) == f['file']) for f in manifest['files']}
         if all(counts.values()) and counts == last:
             break
         if time.monotonic() > deadline:
-            sys.exit(f'timed out waiting for parsing: {counts}')
+            sys.exit(f'timed out waiting for parsing: {counts}. If a parse failed for good, delete eval/.state/ '
+                 'and run setup again (a fresh session re-uploads everything).')
         last = counts
         time.sleep(POLL_S)
-    for f in manifest['files']:
-        flag = '' if counts[f['file']] == f['entries'] else f'  (expected {f["entries"]})'
-        print(f'{f["file"]}: {counts[f["file"]]} entries{flag}')
-
-    pending = api(site, 'GET', '/api/entries?status=PENDING')
+    wrong = {f['file']: (counts[f['file']], f['entries']) for f in manifest['files'] if counts[f['file']] != f['entries']}
+    if wrong:
+        sys.exit('parsed entry counts differ from the manifest (got, expected): '
+                 f'{wrong}. Inspect the eval session before confirming anything.')
+    pending = api.pending()
+    suspects = [e['entryId'] for e in pending if e.get('status') != 'PENDING']
+    if suspects:
+        sys.exit(f'{len(suspects)} DUPLICATE_SUSPECT entries in the eval session; not confirming. Ids: {suspects}')
     for e in pending:
-        api(site, 'PUT', f'/api/entries/{e["entryId"]}/confirm', {})
+        try:
+            api.call('PUT', f'/api/entries/{e["entryId"]}/confirm', {})   # never acknowledges unconverted FX
+        except RuntimeError as err:
+            sys.exit(f'confirm failed for {e["entryId"]}: {err}')
     print(f'confirmed {len(pending)} entries')
 
     # IndexLambda backfills chunkKey on evidence once the document's vectors exist.
     deadline = time.monotonic() + 300
     while time.monotonic() < deadline:
-        missing = [e for e in api(site, 'GET', '/api/entries')
-                   for ev in e.get('evidence', []) if not ev.get('chunkKey')]
+        missing = unindexed(api.confirmed())
         if not missing:
             print('vectors indexed; setup complete')
             return
         time.sleep(POLL_S)
-    print(f'warning: {len(missing)} evidence items still have no chunkKey (check IndexLambda logs / DLQ)')
+    sys.exit(f'{missing} evidence items still have no chunkKey (check IndexLambda logs / DLQ), then re-run setup')
+
+
+def unindexed(entries) -> int:
+    return sum(1 for e in entries for ev in e.get('evidence', []) if not ev.get('chunkKey'))
 
 
 # ── run ──────────────────────────────────────────────────────────────────────
@@ -2839,83 +2996,147 @@ class _LambdaContext:
         return 30000
 
 
-def ask(adv, question):
-    event = {'httpMethod': 'POST', 'headers': {'X-Session-Id': SESSION}, 'body': json.dumps({'question': question})}
+def _log_fields(captured: str) -> dict:
+    """Ids-and-counts fields from the handler's own JSON log lines (no text or amounts in them)."""
+    out = {}
+    for line in captured.splitlines():
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        if event.get('event') == 'advisor_answered':
+            out.update({k: event.get(k) for k in ('rounds', 'toolErrors', 'stopReason', 'retrievalMs', 'latencyMs')})
+        elif event.get('event') in ('advisor_failed', 'tool_failed'):
+            out.setdefault('errors', []).append({k: event.get(k) for k in ('event', 'tool', 'errorType')})
+    return out
+
+
+def ask(adv, session, question):
+    event = {'httpMethod': 'POST', 'headers': {'X-Session-Id': session}, 'body': json.dumps({'question': question})}
+    buf = io.StringIO()
     started = time.monotonic()
-    with contextlib.redirect_stdout(io.StringIO()):      # the handler's own JSON log lines
+    with contextlib.redirect_stdout(buf):
         resp = adv.handler(event, _LambdaContext())
     latency = int((time.monotonic() - started) * 1000)
     body = json.loads(resp['body'])
-    if resp['statusCode'] != 200:
-        body = {'answer': '', 'error': body.get('error'), 'statusCode': resp['statusCode'], 'invalidCitations': 0}
-    return body, latency
+    return resp['statusCode'], body, latency, _log_fields(buf.getvalue())
 
 
-def retrieval(adv, queries):
+def retrieval(adv, session, queries):
     ranks = []
     for q in queries:
         if not q.get('goldDocs'):
             continue
-        ctx = adv.Context(SESSION, {}, deadline=time.monotonic() + 60)
+        ctx = adv.Context(session, {}, deadline=time.monotonic() + 60)
         results = adv.search_documents({'query': q['question'], 'topK': 5}, ctx)
         ranks.append(metrics.rank_of(results, q['goldDocs']))
     return metrics.retrieval_metrics(ranks)
 
 
 def run(site, model_names, limit):
-    queries = load('queries.json')[:limit]
+    state = load_state()
+    session = state['session']
+    api = Api(site, session)
+    gold, manifest = load('gold_transactions.json'), load('manifest.json')
+    entries = api.confirmed()
+    ledger = metrics.ledger_matches_gold(gold, entries)
+    if not ledger['ok']:
+        sys.exit(f'eval ledger does not match the gold transactions ({ledger}); fix the session before scoring')
+    if unindexed(entries):
+        sys.exit(f'{unindexed(entries)} evidence items are not indexed yet; re-run setup')
+    queries = load('queries.json')
+    full = limit is None and list(model_names) == list(MODELS)
+    queries = queries[:limit]
     adv, env = load_advisor()
-    report = {'startedAt': datetime.now(timezone.utc).isoformat(timespec='seconds'),
-              'datasetVersion': load('manifest.json')['datasetVersion'], 'session': SESSION,
-              'embedDimensions': env.get('EMBED_DIMENSIONS'), 'vectorIndex': env.get('VECTOR_INDEX'),
-              'models': {}}
     from penny_common.chunking import CHUNKER_VERSION
-    report['chunkerVersion'] = CHUNKER_VERSION
-    report['retrieval'] = retrieval(adv, queries)
-    report['evidence'] = metrics.evidence_metrics(load('gold_transactions.json'), api(site, 'GET', '/api/entries'))
+    report = {'startedAt': datetime.now(timezone.utc).isoformat(timespec='seconds'),
+              'datasetVersion': manifest['datasetVersion'], 'manifest': manifest['files'],
+              'embedDimensions': env.get('EMBED_DIMENSIONS'), 'vectorIndex': env.get('VECTOR_INDEX'),
+              'chunkerVersion': CHUNKER_VERSION, 'limit': limit, 'modelsRun': list(model_names),
+              'ledger': ledger, 'retrieval': retrieval(adv, session, queries),
+              'evidence': metrics.evidence_metrics(gold, entries), 'models': {}}
     for label in model_names:
         adv.MODEL_ID = MODELS[label]
         rows, costs, latencies = [], [], []
-        for q in queries:
-            body, latency = ask(adv, q['question'])
-            score = metrics.score_answer(q, body)
-            cost = (body.get('usage') or {}).get('estCostUsd') or '0'
-            rows.append({**score, 'question': q['question'], 'answer': body.get('answer'),
-                         'toolsUsed': body.get('toolsUsed'), 'error': body.get('error'),
-                         'latencyMs': latency, 'estCostUsd': cost})
+        for i, q in enumerate(queries):
+            status, body, latency, logs = ask(adv, session, q['question'])
+            ok = status == 200
+            if i == 0 and not ok:          # wrong model id / no model access: fail fast
+                write_raw(report)            # keep (and pay for) any model already scored
+                sys.exit(f'[{label}] first question failed with {status} {logs.get("errors")}; '
+                         f'check that {MODELS[label]} is enabled in Bedrock')
+            score = metrics.score_answer(q, body if ok else {}, ok=ok)
+            cost = (body.get('usage') or {}).get('estCostUsd') if ok else None
+            rows.append({**score, 'pass': metrics.passed(score), 'question': q['question'],
+                         'answer': body.get('answer') if ok else None, 'statusCode': status,
+                         'toolsUsed': body.get('toolsUsed'), 'evidenceStatus': body.get('evidenceStatus'),
+                         'latencyMs': latency, 'estCostUsd': cost, **logs})
             costs.append(cost)
-            latencies.append(latency)
-            mark = 'ok ' if score['numericOk'] and score['toolOk'] else 'MISS'
-            print(f'[{label}] {q["id"]} {mark} {latency:>5} ms  ${cost}')
+            if ok:
+                latencies.append(latency)
+            print(f'[{label}] {q["id"]} {"ok  " if rows[-1]["pass"] else "MISS"} {latency:>6} ms  '
+                  f'${cost if cost is not None else "n/a"}' + ('' if ok else f'  HTTP {status}'))
         report['models'][label] = {'modelId': MODELS[label],
                                    'summary': metrics.summarize(rows, costs, latencies), 'questions': rows}
+    raw_path = write_raw(report)
+    errors = sum(m['summary']['errors'] for m in report['models'].values())
+    if not full:
+        print('partial run (--limit or --models): docs/evaluation-results.md left unchanged')
+    elif errors:
+        print(f'{errors} answers errored: docs/evaluation-results.md left unchanged; see the raw JSON')
+    else:
+        with open(REPORT, 'w') as f:
+            f.write(render(report, os.path.relpath(raw_path, ROOT)))
+        print(f'wrote {os.path.relpath(REPORT, ROOT)}')
+
+
+def write_raw(report) -> str:
     os.makedirs(RESULTS_DIR, exist_ok=True)
     stamp = report['startedAt'].replace(':', '').replace('+0000', 'Z')
     raw_path = os.path.join(RESULTS_DIR, f'run-{stamp}.json')
     with open(raw_path, 'w') as f:
         json.dump(report, f, indent=2)
-    with open(REPORT, 'w') as f:
-        f.write(render(report, os.path.relpath(raw_path, ROOT)))
-    print(f'wrote {os.path.relpath(raw_path, ROOT)} and {os.path.relpath(REPORT, ROOT)}')
+    print(f'wrote {os.path.relpath(raw_path, ROOT)}')
+    return raw_path
 
 
-def _pct(v):
-    return '—' if v is None else f'{v * 100:.0f}%'
+def _pct(r):
+    if r is None or r.get('rate') is None:
+        return '—'
+    return f'{r["rate"] * 100:.0f}% ({r["passed"]}/{r["n"]})'
+
+
+def _frac(rate, n):
+    return '—' if rate is None else f'{rate * 100:.0f}% ({round(rate * n)}/{n})'
+
+
+def _usd(v):
+    return '—' if v is None else f'${v}'
+
+
+def _secs(v):
+    return '—' if v is None else f'{v / 1000:.1f} s'
 
 
 def render(r, raw_path) -> str:
     models = list(r['models'])
-    rows = [('Tool-selection accuracy', 'toolSelectionAccuracy', _pct), ('Numeric exactness', 'numericExactness', _pct),
-            ('Citation validity', 'citationValidity', _pct), ('Supported (every figure cited)', 'supportedRate', _pct),
-            ('Truncated', 'truncatedRate', _pct), ('Mean cost / question', 'meanCostUsd', lambda v: f'${v}'),
-            ('Latency p50', 'latencyP50Ms', lambda v: f'{v / 1000:.1f} s'),
-            ('Latency p95', 'latencyP95Ms', lambda v: f'{v / 1000:.1f} s')]
+    files = r['manifest']
+    kinds = {k: sum(1 for f in files if f['kind'] == k) for k in ('statement', 'receipt')}
+    n = r['models'][models[0]]['summary']['n']
+    rows = [('Questions fully passed', 'passRate', _pct), ('Tool selection', 'toolSelection', _pct),
+            ('Numeric exactness', 'numericExactness', _pct), ('Text match', 'textMatch', _pct),
+            ('Citation validity (answers with citations)', 'citationValidity', _pct),
+            ('Answers stating money that cite a source', 'moneyCited', _pct),
+            ('Errors', 'errors', str), ('Truncated', 'truncated', str),
+            ('Mean cost / question', 'meanCostUsd', _usd), ('Latency p50', 'latencyP50Ms', _secs),
+            ('Latency p95', 'latencyP95Ms', _secs)]
     out = ['# Penny evaluation results', '',
            f'Generated by `eval/run_eval.py` on {r["startedAt"]}. Raw results: `{raw_path}`. '
            'Resume figures come only from this file.', '',
            '| Run metadata | |', '|---|---|',
-           f'| Dataset | `{r["datasetVersion"]}` (3 synthetic statements, 2 synthetic receipts, '
-           f'{r["models"][models[0]]["summary"]["n"]} questions) |',
+           f'| Dataset | `{r["datasetVersion"]}`: {kinds["statement"]} synthetic statements, '
+           f'{kinds["receipt"]} synthetic receipts, {r["ledger"]["expected"]} gold transactions, {n} questions |',
+           f'| Ledger check | booked entries equal the gold transactions ({r["ledger"]["booked"]}/{r["ledger"]["expected"]}) |',
            f'| Embeddings | Titan Text Embeddings V2, {r["embedDimensions"]} dims, index `{r["vectorIndex"]}` |',
            f'| Chunker version | `{r["chunkerVersion"]}` |',
            '| Models | ' + ', '.join(f'{m} (`{r["models"][m]["modelId"]}`)' for m in models) + ' |', '',
@@ -2924,21 +3145,36 @@ def render(r, raw_path) -> str:
         out.append(f'| {label} | ' + ' | '.join(fmt(r['models'][m]['summary'][key]) for m in models) + ' |')
     ret, ev = r['retrieval'], r['evidence']
     out += ['', '## Retrieval (search_documents, same session filter as the agent)', '',
-            f'{ret["n"]} questions with a gold document: hit@3 {_pct(ret["hit@3"])}, hit@5 {_pct(ret["hit@5"])}, '
-            f'MRR {ret["mrr"]}.', '',
+            f'{ret["n"]} questions with gold documents: hit@3 {_frac(ret["hit@3"], ret["n"])}, '
+            f'hit@5 {_frac(ret["hit@5"], ret["n"])}, MRR {ret["mrr"]}.', '',
             '## Evidence linking (statement lines, text-layer PDFs)', '',
-            f'{ev["booked"]}/{ev["n"]} gold lines were booked as entries ({_pct(ev["bookedRate"])}); '
-            f'{ev["evidenceCorrect"]}/{ev["booked"]} carry the exact source line on the right page '
-            f'({_pct(ev["evidenceAccuracy"])}).', '',
+            f'{ev["booked"]}/{ev["n"]} gold lines were booked as entries; '
+            f'{ev["evidenceCorrect"]}/{ev["booked"]} carry the whole source line on the right page '
+            f'({_frac(ev["evidenceAccuracy"], ev["booked"])}).', '',
             '## Misses', '']
     for m in models:
-        misses = [q for q in r['models'][m]['questions'] if not (q['toolOk'] and q['numericOk'])]
+        misses = [q for q in r['models'][m]['questions'] if not q['pass']]
         out.append(f'- **{m}:** ' + (', '.join(f'{q["id"]} ({q["category"]})' for q in misses) or 'none'))
-    out += ['', '## Method', '',
-            '- Deterministic checks only, no LLM judge. A question passes numeric exactness when every gold '
-            'amount appears in the answer (compared as Decimal), or, for no-data questions, when the answer '
-            'states no non-zero amount.',
-            '- Tool selection passes when the expected tool was among the tools the agent called.',
+    out += ['', '## Method and caveats', '',
+            '- Deterministic checks only, no LLM judge. Every rate shows its denominator; a check that does '
+            'not apply to a question is excluded from that rate. Errored or truncated answers fail.',
+            '- **Numeric exactness:** every gold amount appears in the answer (two-decimal amounts compared as '
+            f'Decimal, sign ignored), and the answer lists at most {metrics.MAX_EXTRA_FACTOR}x as many other '
+            'amounts. No-data questions pass only if the answer states no non-zero figure ($-prefixed or two-decimal).',
+            '- **Text match:** a case-insensitive substring (account digits, item names). **Tool selection:** '
+            'the expected tool was among the tools called (extra tools are allowed); questions expecting no tool are excluded.',
+            '- **Citation validity:** of answers that carry citations, the share with no invalid ref removed by '
+            'the server validator. **Money cited:** of answers stating money, the share citing at least one '
+            'source; it does not prove every figure is cited.',
+            '- **Retrieval** embeds the raw question (no yearMonth/docType filter), not the agent\'s own tool '
+            'queries. Balances printed on two statements accept either file as gold.',
+            '- **Evidence** requires the whole printed line, so a correct partial quote counts as a miss (conservative).',
+            '- The ledger check compares dates and amounts only. A parse that books a transaction to the wrong kind '
+            'of account (e.g. transfer instead of expense) shows up as an agent miss on the summary questions.',
+            f'- n = {n} per model: one question is {100 / n:.0f} percentage points. One run, default sampling: '
+            'results vary between runs.',
+            '- Latency is measured from a laptop calling Bedrock directly, not through API Gateway and Lambda. '
+            'Costs use list prices from `penny_common/pricing.py`.',
             '- Not measured in this lean version: the 512 vs 1024-dimension ablation, the old advisor baseline, '
             'and the citation validator\'s false-negative rate.', '']
     return '\n'.join(out)
@@ -2984,15 +3220,27 @@ Apply to `.github/workflows/ci.yml`:
          with:
 ````
 
+Apply to `.gitignore`:
+
+````diff
+--- a/.gitignore
++++ b/.gitignore
+@@ -12,3 +12,4 @@
+ .pytest_cache/
+ .claude/worktrees/
+ .superpowers/
++eval/.state/
+````
+
 - [ ] **Step 4: Verify.**
 
-Run: `python -m pytest test/lambda test/eval -q` and expect `381 passed`.
+Run: `python -m pytest test/lambda test/eval -q` and expect `386 passed`.
 Run: `python eval/run_eval.py --help` and expect usage text listing `{setup,run}`.
 
 - [ ] **Step 5: Commit (user)**
 
 ```bash
-git add eval/metrics.py eval/run_eval.py eval/results/.gitkeep test/eval/test_eval_metrics.py .github/workflows/ci.yml
+git add eval/metrics.py eval/run_eval.py eval/results/.gitkeep test/eval/test_eval_metrics.py .github/workflows/ci.yml .gitignore
 git commit -m "feat: deterministic eval runner (tools, numbers, citations, retrieval, evidence, cost)"
 ```
 
@@ -3031,23 +3279,27 @@ aws cloudfront create-invalidation --distribution-id <DistributionId> --paths "/
   - Upload: re-upload the March synthetic PDF. It should end with "skipped as a duplicate" after 2 minutes, not a false "complete".
   - Every amount shows `$`.
 
-- [ ] **Step 4: Run the eval** (about $0.50 in total):
+- [ ] **Step 4: Run the eval** (about $1 in total):
 
 ```bash
 python eval/run_eval.py setup
 ```
 Expected:
+- `eval session: eval-v1-…`;
 - 5 files uploaded;
-- per-file entry counts (statements expect 8 each; receipts 1 each);
-- `confirmed 26 entries` (or the count actually parsed);
+- `confirmed 26 entries`;
 - `vectors indexed; setup complete`.
+
+If it stops on a count mismatch or a DUPLICATE_SUSPECT entry, paste the output for diagnosis. Don't edit entries by hand.
 
 ```bash
 python eval/run_eval.py run
 ```
 Expected:
-- 40 lines like `[haiku-4.5] q01 ok  2410 ms  $0.004…`;
-- then `wrote eval/results/run-….json and docs/evaluation-results.md`.
+- 40 lines like `[haiku-4.5] q01 ok     2410 ms  $0.004…`;
+- then `wrote eval/results/run-….json` and `wrote docs/evaluation-results.md`.
+
+A smoke run (`--limit 3` or `--models haiku-4.5`) writes only the raw JSON.
 
 - [ ] **Step 5: Commit (user)**
 
@@ -3101,5 +3353,5 @@ git commit -m "docs: rewrite README around architecture, cost and eval results"
   - ¥ on USD documents → Tasks 1 and 2.
 - **Found and fixed during Task 1 review:** `PUT /api/entries/{id}/confirm` wrote client lines without a balance check, dropped FX fields, and did not check the session. All three are fixed in Task 1.
 - **Test counts:**
-  - pytest: 303 → 364 (Task 1) → 367 (Task 6) → 381 (Task 7).
+  - pytest: 303 → 364 (Task 1) → 367 (Task 6) → 386 (Task 7).
   - jest: 20 → 21 (Task 1) → 36 (Task 3) → 43 (Task 4).
