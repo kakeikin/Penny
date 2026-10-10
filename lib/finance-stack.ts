@@ -424,6 +424,11 @@ export class FinanceStack extends cdk.Stack {
     // /api/exchange-rates — served by queryFn
     apiRoot.addResource('exchange-rates').addMethod('GET', new apigw.LambdaIntegration(queryFn));
     exchangeRates.grantReadData(queryFn);
+    // Non-USD documents are converted at parse time; ParseLambda only ever reads the one rates item.
+    parseFn.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['dynamodb:GetItem'],
+      resources: [exchangeRates.tableArn],
+    }));
     monthlyCache.grantReadData(queryFn);
 
     // /api/push/subscribe — POST to subscribe, DELETE to unsubscribe

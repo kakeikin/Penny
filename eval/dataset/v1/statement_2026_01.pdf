@@ -1,0 +1,50 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>
+endobj
+4 0 obj
+<< /Length 723 >>
+stream
+BT
+/F1 10 Tf
+14 TL
+50 750 Td
+(PENNY EVAL BANK - Monthly Statement \(SYNTHETIC SAMPLE\)) Tj T*
+(Account Number: 0000123456789012) Tj T*
+(Statement Period: 01/01/2026 - 01/28/2026) Tj T*
+(Beginning Balance               2400.00) Tj T*
+(Date   Description               Amount) Tj T*
+(01/02  TRADER JOES #552           -43.66) Tj T*
+(01/05  PAYROLL ACME CORP        +3200.00) Tj T*
+(01/09  ABC UTILITIES              -90.91) Tj T*
+(01/14  NETFLIX.COM                -15.49) Tj T*
+(01/17  TRADER JOES #552           -64.39) Tj T*
+(01/21  SHELL OIL 57442            -30.26) Tj T*
+(01/24  BLUE BOTTLE COFFEE          -6.06) Tj T*
+(01/28  RENT PAYMENT             -1850.00) Tj T*
+(Ending Balance                  3499.23) Tj T*
+ET
+endstream
+endobj
+5 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+xref
+0 6
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000115 00000 n 
+0000000241 00000 n 
+0000001015 00000 n 
+trailer
+<< /Size 6 /Root 1 0 R >>
+startxref
+1085
+%%EOF

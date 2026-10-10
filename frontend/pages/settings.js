@@ -49,7 +49,7 @@ async function settings(app) {
               <select id="budget-acct" class="mt-1 w-full border rounded-lg px-3 py-2 text-sm"></select>
             </div>
             <div>
-              <label class="text-xs text-gray-500">Monthly Limit (¥)</label>
+              <label class="text-xs text-gray-500">Monthly Limit ($)</label>
               <input id="budget-limit" type="number" step="0.01" class="mt-1 w-full border rounded-lg px-3 py-2 text-sm" placeholder="500.00" />
             </div>
             <div class="flex items-end">
@@ -111,7 +111,7 @@ async function settings(app) {
       <div class="flex justify-between items-center py-2 border-b border-gray-50">
         <div>
           <span class="text-sm font-medium text-gray-700">${escHtmlSettings(b.name || b.accountId)}</span>
-          <span class="text-xs text-gray-400 ml-2">¥${parseFloat(b.monthlyLimit).toFixed(2)}/month</span>
+          <span class="text-xs text-gray-400 ml-2">${Money.fmt(parseFloat(b.monthlyLimit))}/month</span>
         </div>
         <button onclick="deleteBudget('${escHtmlSettings(b.accountId)}')" class="text-xs text-red-400 hover:text-red-600">Remove</button>
       </div>`).join('');

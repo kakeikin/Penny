@@ -28,7 +28,7 @@ jobs:
             requirements-dev.txt
             lambda/layer/requirements.txt
       - run: pip install -r requirements-dev.txt
-      - run: python -m pytest test/lambda -q
+      - run: python -m pytest test/lambda test/eval -q
 
       - uses: actions/setup-node@v4
         with:

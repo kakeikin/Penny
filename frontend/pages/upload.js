@@ -58,7 +58,7 @@ async function upload(app) {
         <div class="mb-3">
           <label class="text-sm text-gray-600 font-medium">Amount</label>
           <div class="mt-1 relative">
-            <span class="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 text-sm">¥</span>
+            <span class="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 text-sm">$</span>
             <input id="ue-amount" type="number" step="0.01" min="0" class="w-full border rounded-lg pl-7 pr-3 py-2 text-sm" />
           </div>
         </div>
@@ -77,7 +77,7 @@ async function upload(app) {
             <div>
               <label class="text-xs text-gray-500">Currency</label>
               <select id="ue-orig-currency" class="mt-1 w-full border rounded-lg px-3 py-2 text-sm">
-                <option>USD</option><option>EUR</option><option>GBP</option><option>JPY</option><option>HKD</option><option>CAD</option><option>AUD</option>
+                <option>CNY</option><option>EUR</option><option>GBP</option><option>JPY</option><option>HKD</option><option>CAD</option><option>AUD</option>
               </select>
             </div>
             <div>
@@ -161,7 +161,7 @@ async function upload(app) {
   const parentIds = new Set(allAccounts.map(a => a.parentId).filter(Boolean));
   function isLeaf(a) { return !parentIds.has(a.accountId); }
   function opts(list, selectedId = '') {
-    return list.map(a => `<option value="${a.accountId}" ${a.accountId === selectedId ? 'selected' : ''}>${a.name}</option>`).join('');
+    return list.map(a => `<option value="${Citations.esc(a.accountId)}" ${a.accountId === selectedId ? 'selected' : ''}>${Citations.esc(a.name)}</option>`).join('');
   }
   const expenseAccts = allAccounts.filter(a => a.type === 'EXPENSE' && isLeaf(a));
   const incomeAccts  = allAccounts.filter(a => a.type === 'INCOME' && isLeaf(a));
@@ -172,10 +172,11 @@ async function upload(app) {
   /** Render the 5 <td> cells for a line row in view mode. */
   function lineViewTDs(entryId, i, l) {
     return `
-      <td class="py-1 text-gray-700">${acctName(l.accountId)}</td>
-      <td class="py-1"><span class="${l.direction === 'DEBIT' ? 'badge-debit' : 'badge-credit'}">${l.direction}</span></td>
-      <td class="py-1 text-right">¥${parseFloat(l.amount).toFixed(2)}</td>
-      <td class="py-1 text-gray-400 text-xs">${l.note || ''}</td>
+      <td class="py-1 text-gray-700">${Citations.esc(acctName(l.accountId))}</td>
+      <td class="py-1"><span class="${l.direction === 'DEBIT' ? 'badge-debit' : 'badge-credit'}">${Citations.esc(l.direction)}</span></td>
+      <td class="py-1 text-right">${Money.fmt(parseFloat(l.amount))}${l.originalCurrency
+        ? `<div class="text-xs text-gray-400">${Citations.esc(l.originalCurrency)} ${Citations.esc(l.originalAmount)}</div>` : ''}</td>
+      <td class="py-1 text-gray-400 text-xs">${Citations.esc(l.note || '')}</td>
       <td class="py-1 text-right whitespace-nowrap">
         <button onclick="editLine('${entryId}', ${i})"
           class="text-gray-300 hover:text-blue-500 transition-colors px-1" title="Edit this line">✏️</button>
@@ -188,7 +189,7 @@ async function upload(app) {
   function lineEditTDs(entryId, i, l) {
     const leafAccts = allAccounts.filter(a => isLeaf(a));
     const acctOpts = leafAccts.map(a =>
-      `<option value="${a.accountId}" ${a.accountId === l.accountId ? 'selected' : ''}>[${a.type}] ${a.name}</option>`
+      `<option value="${Citations.esc(a.accountId)}" ${a.accountId === l.accountId ? 'selected' : ''}>[${Citations.esc(a.type)}] ${Citations.esc(a.name)}</option>`
     ).join('');
     return `
       <td colspan="4" class="py-1 pr-2">
@@ -200,7 +201,7 @@ async function upload(app) {
           </select>
           <input id="le-amt-${entryId}-${i}" type="number" step="0.01" value="${parseFloat(l.amount).toFixed(2)}"
             class="border rounded px-1 py-0.5 text-xs w-20" />
-          <input id="le-note-${entryId}-${i}" type="text" value="${(l.note || '').replace(/"/g, '&quot;')}" placeholder="note"
+          <input id="le-note-${entryId}-${i}" type="text" value="${Citations.esc(l.note || '')}" placeholder="note"
             class="border rounded px-1 py-0.5 text-xs flex-1 min-w-[60px]" />
         </div>
       </td>
@@ -254,11 +255,19 @@ async function upload(app) {
     try {
       const file = await normalizeFile(rawFile);
       if (file !== rawFile) showStatus(`Converting iPhone photo to JPEG…`);
-      await API.uploadFile(file.name, file.type, file);
-      showStatus('File uploaded. Parsing with Claude AI… this may take 20–30 seconds.', 'text-blue-600');
-      await new Promise(r => setTimeout(r, 20000));
+      const key = await API.uploadFile(file.name, file.type, file);
+      showStatus('File uploaded. Parsing with Claude AI… this usually takes 20–60 seconds.', 'text-blue-600');
+      const result = await UploadPoll.waitForParsedEntries(() => API.get('/api/entries?status=PENDING'), key,
+        { cancelled: () => !status.isConnected });          // stop if the user left the Upload page
+      if (result.status === 'cancelled') return;
       await loadPending();
-      showStatus('Parsing complete. Review entries below.', 'text-green-600');
+      if (result.status === 'parsed') {
+        const n = result.entries.length;
+        showStatus(`Parsing complete: ${n} ${n === 1 ? 'entry' : 'entries'} ready to review below.`, 'text-green-600');
+      } else {
+        showStatus('No entries from this file yet. If it was uploaded before, it was skipped as a duplicate; '
+                 + 'otherwise check back in a minute.', 'text-amber-600');
+      }
     } catch (e) {
       showStatus('Error: ' + e.message, 'text-red-600');
     }
@@ -277,10 +286,15 @@ async function upload(app) {
           <span>⚠️</span>
           <span><strong>Possible duplicate</strong> — a similar transaction already exists. Review before confirming.</span>
         </div>` : ''}
+        ${e.fxStatus === 'unconverted' ? `
+        <div class="flex items-center gap-2 mb-3 px-3 py-2 bg-amber-50 rounded-lg text-sm text-amber-800">
+          <span>💱</span>
+          <span><strong>Not converted to USD</strong> — amounts are as printed${e.printedCurrency ? ` (${Citations.esc(e.printedCurrency)})` : ''}. Edit them to USD before confirming.</span>
+        </div>` : ''}
         <div class="flex justify-between items-start mb-3">
           <div>
-            <p class="font-medium text-gray-800">${e.date} — ${e.description}</p>
-            <span class="text-xs text-gray-400 uppercase tracking-wide">${e.source}</span>
+            <p class="font-medium text-gray-800">${Citations.esc(e.date)} — ${Citations.esc(e.description)}</p>
+            <span class="text-xs text-gray-400 uppercase tracking-wide">${Citations.esc(e.source)}</span>
           </div>
           <div class="flex gap-2">
             <button onclick="deletePendingEntry('${e.entryId}')" class="bg-red-50 hover:bg-red-100 text-red-600 font-medium px-3 py-1.5 rounded-lg text-sm transition-colors">Delete</button>
@@ -380,7 +394,17 @@ async function upload(app) {
     const entry = (window._pendingEntries || []).find(e => e.entryId === id);
     // Pass current (possibly edited) lines so ConfirmLambda uses them
     const body = entry?.lines ? { lines: entry.lines } : {};
-    await API.put(`/api/entries/${id}/confirm`, body);
+    if (entry?.fxStatus === 'unconverted') {
+      const cur = entry.printedCurrency || 'a foreign currency';
+      if (!confirm(`These amounts are in ${cur} and were not converted to USD. Book them as USD anyway?`)) return;
+      body.acknowledgeUnconverted = true;
+    }
+    try {
+      await API.put(`/api/entries/${id}/confirm`, body);
+    } catch (e) {
+      showStatus('Could not confirm: ' + e.message, 'text-red-600');
+      return;
+    }
     document.getElementById(`entry-${id}`)?.remove();
     const remaining = document.querySelectorAll('[id^="entry-"]');
     if (!remaining.length) document.getElementById('pending-section').classList.add('hidden');
@@ -396,13 +420,29 @@ async function upload(app) {
 
   document.getElementById('confirm-all').onclick = async () => {
     const cards = document.querySelectorAll('[id^="entry-"]');
+    let confirmed = 0, review = 0, failed = 0, lastError = '';
     for (const card of cards) {
       const id = card.id.replace('entry-', '');
-      await API.put(`/api/entries/${id}/confirm`);
-      card.remove();
+      const entry = (window._pendingEntries || []).find(e => e.entryId === id);
+      try {
+        // Same body as a single Confirm (edited lines), but never the unconverted acknowledgement:
+        // those entries answer 409 and stay for review.
+        await API.put(`/api/entries/${id}/confirm`, entry?.lines ? { lines: entry.lines } : {});
+        card.remove();
+        confirmed++;
+      } catch (e) {
+        if (e.status === 409) review++; else { failed++; lastError = e.message; }
+      }
     }
-    document.getElementById('pending-section').classList.add('hidden');
-    showStatus('All entries confirmed.', 'text-green-600');
+    if (!review && !failed) {
+      document.getElementById('pending-section').classList.add('hidden');
+      showStatus('All entries confirmed.', 'text-green-600');
+    } else {
+      const parts = [`${confirmed} confirmed`];
+      if (review) parts.push(`${review} need${review === 1 ? 's' : ''} currency review`);
+      if (failed) parts.push(`${failed} failed (${lastError})`);
+      showStatus(parts.join(', ') + '.', failed ? 'text-red-600' : 'text-amber-600');
+    }
   };
 
   // Edit modal logic
@@ -457,7 +497,7 @@ async function upload(app) {
       document.getElementById('ue-foreign').checked = true;
       document.getElementById('ue-foreign-fields').classList.remove('hidden');
       document.getElementById('ue-orig-amount').value = fxLine.originalAmount || '';
-      document.getElementById('ue-orig-currency').value = fxLine.originalCurrency || 'USD';
+      document.getElementById('ue-orig-currency').value = fxLine.originalCurrency || 'CNY';
       document.getElementById('ue-rate').value = fxLine.exchangeRate || '';
     } else {
       document.getElementById('ue-foreign').checked = false;

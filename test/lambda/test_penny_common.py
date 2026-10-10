@@ -7,7 +7,7 @@ from penny_common.chunking import (MAX_CHARS, MAX_SINGLE_CHUNK, chunk_document, 
                                    detect_day_first, infer_year_month, vector_key)
 from penny_common.masking import mask_identifiers
 from penny_common.pdftext import SCANNED_MIN_CHARS, PdfTextError, extract_pdf_pages
-from penny_common.textdoc import display_name, build_text_doc, doc_id_for, text_doc_key
+from penny_common.textdoc import display_name, build_text_doc, doc_id_for, statement_period, text_doc_key
 from penny_common.textnorm import normalize, contains_normalized
 from pdf_fixtures import make_pdf
 
@@ -271,3 +271,33 @@ def test_build_text_doc_shape():
 def test_doc_id_for_namespaces_demo_sessions():
     assert doc_id_for('h1') == 'h1' and doc_id_for('h1', None) == 'h1'
     assert doc_id_for('h1', 'abc') == 'demo-abc-h1'
+
+
+def test_statement_period_spans_valid_entry_dates():
+    assert statement_period(['2026-02-11', None, 'Feb 11', '2026-02-03', 7]) == {'start': '2026-02-03', 'end': '2026-02-11'}
+    assert statement_period([]) is None and statement_period([None, 'x']) is None
+
+
+def test_statement_period_ignores_impossible_and_future_dates():
+    assert statement_period(['2026-02-30', '2026-02-03']) == {'start': '2026-02-03', 'end': '2026-02-03'}
+    # A mistyped 2027 date must not become the reference year for a January 2026 statement.
+    dates = ['2026-01-05', '2027-01-12', '2026-01-20']
+    assert statement_period(dates, '2026-02-01T10:00:00Z') == {'start': '2026-01-05', 'end': '2026-01-20'}
+    assert statement_period(['2026-02-02'], '2026-02-01T23:00:00+00:00')['end'] == '2026-02-02'   # +1 day slack
+    assert statement_period(dates, 'not a date')['end'] == '2027-01-12'                          # no upload: keep all
+
+
+def test_fold_ignores_punctuation_case_and_accents_but_keeps_non_latin_text():
+    from penny_common.textnorm import fold
+    assert fold("TRADER JOE'S #552") == 'traderjoes552' and fold('Trader Joes') in fold("TRADER JOE'S #552")
+    assert fold('Crème Brûlée') == fold('CREME BRULEE')
+    assert fold('星巴克 咖啡') == '星巴克咖啡'
+    assert fold("'&") == '' and fold(None) == ''
+
+
+def test_receipt_without_nn_dates_takes_its_month_from_the_statement_period():
+    doc = {'docId': 'r1', 'fileName': 'cafe.png', 'docType': 'receipt', 'uploadedAt': '2026-10-08T00:00:00Z',
+           'statementPeriod': statement_period(['2026-03-19']),
+           'pages': [{'page': 1, 'text': 'PENNY EVAL CAFE\nDate: Mar 19, 2026\nTip 2.00\nTOTAL 12.00',
+                      'extractor': 'claude'}]}
+    assert [r['yearMonth'] for r in chunk_document(doc)] == ['2026-03']   # not the upload month

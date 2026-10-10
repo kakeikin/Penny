@@ -33,7 +33,7 @@ from botocore.config import Config  # noqa: E402
 from botocore.exceptions import ClientError  # noqa: E402
 
 from penny_common.pdftext import PdfTextError, extract_pdf_pages  # noqa: E402
-from penny_common.textdoc import build_text_doc, display_name, doc_id_for, text_doc_key  # noqa: E402
+from penny_common.textdoc import build_text_doc, display_name, doc_id_for, statement_period, text_doc_key  # noqa: E402
 
 TRANSCRIBE_MODEL_ID = 'us.anthropic.claude-sonnet-4-6'
 IMAGE_TYPES = {'jpg': 'image/jpeg', 'jpeg': 'image/jpeg', 'png': 'image/png'}
@@ -57,7 +57,8 @@ def _age_key(created: str):
 def list_documents(entries_table) -> list:
     """One record per uploaded file (per session), from the earliest entry that references it."""
     docs = {}
-    kwargs = {'ProjectionExpression': 'entryId, fileHash, fileKey, sessionId, createdAt, evidence'}
+    kwargs = {'ProjectionExpression': 'entryId, fileHash, fileKey, sessionId, createdAt, evidence, #d',
+              'ExpressionAttributeNames': {'#d': 'date'}}       # "date" is a DynamoDB reserved word
     while True:
         resp = entries_table.scan(**kwargs)
         for item in resp.get('Items', []):
@@ -69,15 +70,17 @@ def list_documents(entries_table) -> list:
             doc = docs.get(doc_id)
             if doc is None:
                 doc = docs[doc_id] = {'docId': doc_id, 'fileKey': file_key, 'sessionId': item.get('sessionId'),
-                                      'uploadedAt': created, 'entries': []}
+                                      'uploadedAt': created, 'entries': [], 'dates': []}
             elif _age_key(created) < _age_key(doc['uploadedAt']):
                 doc.update(fileKey=file_key, uploadedAt=created)
+            doc['dates'].append(item.get('date'))
             link = _evidence_link(item)
             if link:
                 doc['entries'].append(link)
         if 'LastEvaluatedKey' not in resp:
             for doc in docs.values():
                 doc['entries'].sort(key=lambda e: e['entryId'])
+                doc['statementPeriod'] = statement_period(doc.pop('dates'), doc['uploadedAt'])
             return sorted(docs.values(), key=lambda d: d['docId'])
         kwargs['ExclusiveStartKey'] = resp['LastEvaluatedKey']
 
@@ -161,8 +164,11 @@ def process(doc, args, s3, bedrock) -> tuple:
     existing = read_text_doc(s3, args.bucket, doc['docId'])
     if existing is not None and not args.force:
         return 'exists', None
+    if existing is not None:
+        existing['statementPeriod'] = doc.get('statementPeriod')   # older docs never had one
     if existing is not None and has_transcripts(existing):
-        # Re-upload unchanged: re-fires IndexLambda without regenerating (or paying for) text.
+        # Re-upload with the period refreshed: re-fires IndexLambda without regenerating (or
+        # paying for) the transcribed text.
         if not args.dry_run:
             _put_text_doc(s3, args.bucket, existing)
         return 'reindexed', 'kept_transcripts'
@@ -178,7 +184,8 @@ def process(doc, args, s3, bedrock) -> tuple:
         return 'skipped', pages
     if not args.dry_run:
         _put_text_doc(s3, args.bucket, build_text_doc(doc['docId'], doc['fileKey'], doc_type, pages,
-                                                      doc['entries'], doc['sessionId'], doc['uploadedAt']))
+                                                      doc['entries'], doc['sessionId'], doc['uploadedAt'],
+                                                      statement_period=doc.get('statementPeriod')))
     return 'written', f'{len(pages)} pages'
 
 

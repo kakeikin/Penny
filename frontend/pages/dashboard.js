@@ -28,8 +28,8 @@ async function dashboard(app) {
     container.innerHTML = alerts.map(a => {
       const name = esc(a.accountName);
       const msg = a.overLimit
-        ? `<strong>${name}</strong> exceeded monthly limit of ¥${a.monthlyLimit.toFixed(2)} — spent ¥${a.currentMonthTotal.toFixed(2)} this month.`
-        : `<strong>${name}</strong> is ${a.percentOverAverage}% above the 6-month average (¥${a.sixMonthAverage.toFixed(2)}/mo) — spent ¥${a.currentMonthTotal.toFixed(2)} this month.`;
+        ? `<strong>${name}</strong> exceeded monthly limit of ${Money.fmt(a.monthlyLimit)} — spent ${Money.fmt(a.currentMonthTotal)} this month.`
+        : `<strong>${name}</strong> is ${a.percentOverAverage}% above the 6-month average (${Money.fmt(a.sixMonthAverage)}/mo) — spent ${Money.fmt(a.currentMonthTotal)} this month.`;
       return `<div class="flex items-start gap-3 p-3 bg-amber-50 border border-amber-200 rounded-lg text-sm text-amber-900">
         <span class="text-lg">⚠️</span><span>${msg}</span>
       </div>`;
@@ -79,7 +79,7 @@ async function dashboard(app) {
           tension: 0.3,
         }],
       },
-      options: { scales: { y: { ticks: { callback: v => '¥' + v.toLocaleString() } } } },
+      options: { scales: { y: { ticks: { callback: v => Money.symbol + v.toLocaleString() } } } },
     });
   } catch (e) {
     document.getElementById('dash-loading').textContent = 'Error: ' + e.message;
@@ -87,4 +87,4 @@ async function dashboard(app) {
 }
 
 const PALETTE = ['#3b82f6','#ef4444','#f59e0b','#10b981','#8b5cf6','#ec4899','#06b6d4','#84cc16'];
-const fmt = v => '¥' + Number(v).toLocaleString('en', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const fmt = v => Money.fmt(v);
