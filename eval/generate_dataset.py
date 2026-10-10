@@ -184,12 +184,33 @@ def build(out=OUT, render=None):
     add('no_data', 'How much did I spend in December 2025?', [], no_data=True)
     add('no_data', 'What is my credit score?', [], no_data=True)
 
+    # Held-out paraphrases, written before the post-fix re-run and never used to tune prompts or
+    # tools: reported separately so eval-driven fixes can be checked for over-fitting.
+    tuned, q = q, []
+    add('summary', 'What were my total expenses for February 2026?', ['get_spending_summary'],
+        [money(month_spend['2026-02'])])
+    add('summary', 'How much money came in during March 2026?', ['get_spending_summary'],
+        [money(month_income['2026-03'])])
+    add('transaction', 'What did I pay for rent in January 2026?', ['find_transactions'], ['1850.00'])
+    add('transaction', 'How much was my Netflix subscription in February 2026?', ['find_transactions'],
+        [amt(by('NETFLIX.COM', '2026-02')[0])])
+    add('transaction', 'What did I spend on fuel at Shell in January 2026?', ['find_transactions'],
+        [amt(by('SHELL OIL 57442', '2026-01')[0])])
+    add('document', 'According to my March 2026 bank statement, what was the ending balance?',
+        ['search_documents'], [file_of['2026-03']['endingBalance']], [doc('statement_2026_03.pdf')])
+    add('document', 'What was the subtotal on my Ace Hardware receipt from February 2026?', ['search_documents'],
+        [money(sum(p for _, p in RECEIPTS[0]['items']))], [doc('receipt_2026_02_hardware.png')])
+    add('no_data', 'How much did I spend in June 2025?', [], no_data=True)
+    holdout = [{**h, 'id': 'h' + h['id'][1:]} for h in q]
+
     manifest = {'datasetVersion': DATASET_VERSION, 'seed': SEED, 'files': files}
-    for name, obj in [('manifest.json', manifest), ('gold_transactions.json', gold), ('queries.json', q)]:
+    for name, obj in [('manifest.json', manifest), ('gold_transactions.json', gold), ('queries.json', tuned),
+                      ('queries_holdout.json', holdout)]:
         with open(os.path.join(out, name), 'w') as f:
             json.dump(obj, f, indent=2)
             f.write('\n')
-    print(f'wrote {len(files)} files, {len(gold)} gold transactions, {len(q)} questions to {out}')
+    print(f'wrote {len(files)} files, {len(gold)} gold transactions, {len(tuned)} questions '
+          f'(+{len(holdout)} held out) to {out}')
 
 
 if __name__ == '__main__':

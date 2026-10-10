@@ -35,19 +35,22 @@ def test_list_documents_dedupes_paginates_namespaces_and_keeps_evidence(backfill
     table = MagicMock()
     table.scan.side_effect = [
         {'Items': [{'entryId': 'e2', 'fileHash': 'h1', 'fileKey': 'uploads/a.pdf', 'createdAt': '2026-03-02',
-                    'evidence': [{'page': Decimal('1'), 'text': '03/14 ABC -120.00'}]},
+                    'date': '2026-02-14', 'evidence': [{'page': Decimal('1'), 'text': '03/14 ABC -120.00'}]},
                    {'entryId': 'manual'}], 'LastEvaluatedKey': {'entryId': 'x'}},
-        {'Items': [{'entryId': 'e1', 'fileHash': 'h1', 'fileKey': 'uploads/a.pdf', 'createdAt': '2026-03-01'},
+        {'Items': [{'entryId': 'e1', 'fileHash': 'h1', 'fileKey': 'uploads/a.pdf', 'createdAt': '2026-03-01',
+                    'date': '2026-02-02'},
                    {'entryId': 'e3', 'fileHash': 'h1', 'fileKey': 'uploads/demo-s/b.pdf', 'sessionId': 's',
                     'createdAt': '2026-03-05', 'evidence': [{'page': 'bad'}]}]},
     ]
     docs = backfill.list_documents(table)
     assert docs == [
         {'docId': 'demo-s-h1', 'fileKey': 'uploads/demo-s/b.pdf', 'sessionId': 's', 'uploadedAt': '2026-03-05',
-         'entries': []},
+         'entries': [], 'statementPeriod': None},
         {'docId': 'h1', 'fileKey': 'uploads/a.pdf', 'sessionId': None, 'uploadedAt': '2026-03-01',
-         'entries': [{'entryId': 'e2', 'page': 1, 'evidenceText': '03/14 ABC -120.00'}]},
+         'entries': [{'entryId': 'e2', 'page': 1, 'evidenceText': '03/14 ABC -120.00'}],
+         'statementPeriod': {'start': '2026-02-02', 'end': '2026-02-14'}},
     ]
+    assert table.scan.call_args_list[0].kwargs['ExpressionAttributeNames'] == {'#d': 'date'}
     assert table.scan.call_args_list[1].kwargs['ExclusiveStartKey'] == {'entryId': 'x'}
 
 
@@ -105,8 +108,19 @@ def test_force_reuploads_transcript_docs_unchanged(backfill, monkeypatch, capsys
     stats, s3 = _run_main(backfill, monkeypatch, items, {'uploads/a.pdf': TEXT_PDF},
                           {'text/h1.json': existing_doc}, ['--force'])
     assert stats['reindexed'] == 1 and stats['written'] == 0
-    assert json.loads(s3.put_object.call_args.kwargs['Body']) == existing_doc
+    assert json.loads(s3.put_object.call_args.kwargs['Body']) == {**existing_doc, 'statementPeriod': None}
     assert 'kept_transcripts' in capsys.readouterr().out
+
+
+def test_force_reupload_adds_the_statement_period_to_old_receipt_docs(backfill, monkeypatch):
+    items = [{'entryId': 'a', 'fileHash': 'h1', 'fileKey': 'uploads/r.png', 'createdAt': '2026-10-08T00:00:00Z',
+              'date': '2026-02-11'}]
+    existing_doc = {'docId': 'h1', 'docType': 'receipt',
+                    'pages': [{'page': 1, 'text': 'Date: Feb 11, 2026', 'extractor': 'claude'}]}
+    _, s3 = _run_main(backfill, monkeypatch, items, {'uploads/r.png': b'png'}, {'text/h1.json': existing_doc}, ['--force'])
+    doc = json.loads(s3.put_object.call_args.kwargs['Body'])
+    assert doc['statementPeriod'] == {'start': '2026-02-11', 'end': '2026-02-11'}
+    assert doc['pages'] == existing_doc['pages']               # transcripts kept, not regenerated
 
 
 def test_force_rewrites_text_only_docs_with_evidence_links(backfill, monkeypatch):
@@ -208,7 +222,7 @@ def test_force_keeps_existing_doc_when_rebuild_is_impossible(backfill, monkeypat
     stats, s3 = _run_main(backfill, monkeypatch, items, {'uploads/a.pdf': b'now corrupt'},
                           {'text/h1.json': existing_doc}, ['--force'])
     assert stats['reindexed'] == 1
-    assert json.loads(s3.put_object.call_args.kwargs['Body']) == existing_doc
+    assert json.loads(s3.put_object.call_args.kwargs['Body']) == {**existing_doc, 'statementPeriod': None}
 
 
 def test_failure_detail_includes_aws_error_code(backfill, monkeypatch, capsys):

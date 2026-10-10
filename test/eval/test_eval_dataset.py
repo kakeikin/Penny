@@ -22,10 +22,13 @@ def _load(name):
 
 def test_committed_dataset_is_consistent():
     queries, manifest, gold = _load('queries.json'), _load('manifest.json'), _load('gold_transactions.json')
+    holdout = _load('queries_holdout.json')
     files = {f['file'] for f in manifest['files']}
     assert all(os.path.exists(os.path.join(BASE, f)) for f in files)
     assert len({q['id'] for q in queries}) == len(queries) == 20
-    for q in queries:
+    assert len({q['id'] for q in holdout}) == len(holdout) == 8 and all(q['id'].startswith('h') for q in holdout)
+    assert not {q['question'] for q in holdout} & {q['question'] for q in queries}
+    for q in queries + holdout:
         assert q['expectTools'] or q['expectNoData']
         assert all(g['file'] in files for g in q['goldDocs'])
         assert all(D(a) > 0 for a in q['expectAmounts'])

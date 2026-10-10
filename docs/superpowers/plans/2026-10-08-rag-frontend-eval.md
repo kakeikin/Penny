@@ -3246,6 +3246,889 @@ git commit -m "feat: deterministic eval runner (tools, numbers, citations, retri
 
 ---
 
+### Task 7b: Fixes found by the baseline eval run
+
+The baseline run (`eval/results/run-2026-10-09T074050Z.json`) scored 14/20 for both models. Every miss was traced to a cause:
+
+| Miss | Cause | Fix |
+|---|---|---|
+| q16, q17: receipts "not found" (both models) | ParseLambda never passed `statementPeriod` to the text doc (a Plan 1 gap). Receipts print `Feb 11, 2026` (no `NN/NN` line dates), so their chunks got the **upload** month, and the agent's `yearMonth` filter missed them. Unfiltered retrieval scored 100%. | `textdoc.statement_period(dates, uploaded_at)` = the span of the valid entry dates. Impossible days (`2026-02-30`) and days after the upload (+1 day) are ignored, so one mistyped future date can't move a statement into next year. ParseLambda passes it (from normalized entries). The backfill script passes it too, including for docs it re-puts unchanged (receipts with transcripts). |
+| q09: no Trader Joes found (Haiku) | The keyword filter was a raw substring: "trader joes" doesn't match "Trader Joe's…". | `penny_common.textnorm.fold`: NFKD, accents stripped, casefold, then Unicode letters and digits only. CJK keywords still match, and a keyword that folds to nothing raises a ToolError instead of silently meaning "no filter". |
+| q04 income; Sonnet q01/q02 | The models picked `groupBy=account`, which lists expenses only. The tool description didn't say that month view returns income, expense and net totals. | Describe both views explicitly. |
+| q05 (both); Sonnet q01 | The answers were correct, but they listed a category breakdown. The ">2x extra amounts" rule failed them. | Metrics v2: between 2x and 10x extra amounts is **verbose**, not failed. Above 10x still fails, so an answer that lists everything can't pass. Recorded in `RULE_CHANGES`. |
+
+Left as recorded, since these are the agent's own choices: Haiku q07 answered correctly but from the document instead of `find_transactions`, and Sonnet wrote a `[S1–S6]` range that the validator removed. 
+
+**Separating what each change contributes** (from the Task 7b review):
+- The **Run history** table shows every full run both "as scored" and "re-scored with current rules" from its stored answers. Under v2 the baseline re-scores to Haiku 15/20 and Sonnet 16/20. That gain comes from the rule change, not from code.
+- Eight **held-out paraphrased questions** (`queries_holdout.json`), written after diagnosing the baseline misses but before the post-fix run, are scored separately. They check that the fixes survive rewording; they are not an independent test set.
+- Present the results as "eval-driven fixes re-measured on the same 20 questions, plus 8 paraphrased held-out questions written after diagnosis".
+
+**Files:**
+- Create: `eval/dataset/v1/queries_holdout.json` (generated)
+- Modify:
+  - `lambda/common/penny_common/textdoc.py` (`statement_period`)
+  - `lambda/common/penny_common/textnorm.py` (`fold`)
+  - `eval/generate_dataset.py` (held-out questions)
+  - `lambda/parse/index.py`
+  - `scripts/backfill_index.py`
+  - `lambda/advisor/index.py`
+  - `eval/metrics.py`
+  - `eval/run_eval.py`
+- Tests:
+  - `test/lambda/test_penny_common.py`
+  - `test/lambda/test_parse_evidence.py`
+  - `test/lambda/test_backfill.py`
+  - `test/lambda/test_advisor.py`
+  - `test/eval/test_eval_metrics.py`
+  - `test/eval/test_eval_dataset.py`
+
+- [ ] **Step 1: Write the failing tests.**
+
+Apply to `test/lambda/test_penny_common.py`:
+
+````diff
+--- a/test/lambda/test_penny_common.py
++++ b/test/lambda/test_penny_common.py
+@@ -7,7 +7,7 @@
+                                    detect_day_first, infer_year_month, vector_key)
+ from penny_common.masking import mask_identifiers
+ from penny_common.pdftext import SCANNED_MIN_CHARS, PdfTextError, extract_pdf_pages
+-from penny_common.textdoc import display_name, build_text_doc, doc_id_for, text_doc_key
++from penny_common.textdoc import display_name, build_text_doc, doc_id_for, statement_period, text_doc_key
+ from penny_common.textnorm import normalize, contains_normalized
+ from pdf_fixtures import make_pdf
+ 
+@@ -271,3 +271,33 @@
+ def test_doc_id_for_namespaces_demo_sessions():
+     assert doc_id_for('h1') == 'h1' and doc_id_for('h1', None) == 'h1'
+     assert doc_id_for('h1', 'abc') == 'demo-abc-h1'
++
++
++def test_statement_period_spans_valid_entry_dates():
++    assert statement_period(['2026-02-11', None, 'Feb 11', '2026-02-03', 7]) == {'start': '2026-02-03', 'end': '2026-02-11'}
++    assert statement_period([]) is None and statement_period([None, 'x']) is None
++
++
++def test_statement_period_ignores_impossible_and_future_dates():
++    assert statement_period(['2026-02-30', '2026-02-03']) == {'start': '2026-02-03', 'end': '2026-02-03'}
++    # A mistyped 2027 date must not become the reference year for a January 2026 statement.
++    dates = ['2026-01-05', '2027-01-12', '2026-01-20']
++    assert statement_period(dates, '2026-02-01T10:00:00Z') == {'start': '2026-01-05', 'end': '2026-01-20'}
++    assert statement_period(['2026-02-02'], '2026-02-01T23:00:00+00:00')['end'] == '2026-02-02'   # +1 day slack
++    assert statement_period(dates, 'not a date')['end'] == '2027-01-12'                          # no upload: keep all
++
++
++def test_fold_ignores_punctuation_case_and_accents_but_keeps_non_latin_text():
++    from penny_common.textnorm import fold
++    assert fold("TRADER JOE'S #552") == 'traderjoes552' and fold('Trader Joes') in fold("TRADER JOE'S #552")
++    assert fold('Crème Brûlée') == fold('CREME BRULEE')
++    assert fold('星巴克 咖啡') == '星巴克咖啡'
++    assert fold("'&") == '' and fold(None) == ''
++
++
++def test_receipt_without_nn_dates_takes_its_month_from_the_statement_period():
++    doc = {'docId': 'r1', 'fileName': 'cafe.png', 'docType': 'receipt', 'uploadedAt': '2026-10-08T00:00:00Z',
++           'statementPeriod': statement_period(['2026-03-19']),
++           'pages': [{'page': 1, 'text': 'PENNY EVAL CAFE\nDate: Mar 19, 2026\nTip 2.00\nTOTAL 12.00',
++                      'extractor': 'claude'}]}
++    assert [r['yearMonth'] for r in chunk_document(doc)] == ['2026-03']   # not the upload month
+````
+
+Apply to `test/lambda/test_parse_evidence.py`:
+
+````diff
+--- a/test/lambda/test_parse_evidence.py
++++ b/test/lambda/test_parse_evidence.py
+@@ -190,6 +190,8 @@
+     assert doc['pages'][0]['extractor'] == 'pypdf'
+     assert doc['entries'] == [{'entryId': entry_item['entryId'], 'page': 1,
+                                'evidenceText': '03/14 ABC UTILITIES -120.00'}]
++    # IndexLambda dates chunks without NN/NN lines (e.g. receipts) from this period.
++    assert doc['statementPeriod'] == {'start': entry_item['date'], 'end': entry_item['date']}
+ 
+ 
+ def _run_s3_event(parse, monkeypatch, file_bytes, key, claude_result, seen=None):
+````
+
+Apply to `test/lambda/test_backfill.py`:
+
+````diff
+--- a/test/lambda/test_backfill.py
++++ b/test/lambda/test_backfill.py
+@@ -35,19 +35,22 @@
+     table = MagicMock()
+     table.scan.side_effect = [
+         {'Items': [{'entryId': 'e2', 'fileHash': 'h1', 'fileKey': 'uploads/a.pdf', 'createdAt': '2026-03-02',
+-                    'evidence': [{'page': Decimal('1'), 'text': '03/14 ABC -120.00'}]},
++                    'date': '2026-02-14', 'evidence': [{'page': Decimal('1'), 'text': '03/14 ABC -120.00'}]},
+                    {'entryId': 'manual'}], 'LastEvaluatedKey': {'entryId': 'x'}},
+-        {'Items': [{'entryId': 'e1', 'fileHash': 'h1', 'fileKey': 'uploads/a.pdf', 'createdAt': '2026-03-01'},
++        {'Items': [{'entryId': 'e1', 'fileHash': 'h1', 'fileKey': 'uploads/a.pdf', 'createdAt': '2026-03-01',
++                    'date': '2026-02-02'},
+                    {'entryId': 'e3', 'fileHash': 'h1', 'fileKey': 'uploads/demo-s/b.pdf', 'sessionId': 's',
+                     'createdAt': '2026-03-05', 'evidence': [{'page': 'bad'}]}]},
+     ]
+     docs = backfill.list_documents(table)
+     assert docs == [
+         {'docId': 'demo-s-h1', 'fileKey': 'uploads/demo-s/b.pdf', 'sessionId': 's', 'uploadedAt': '2026-03-05',
+-         'entries': []},
++         'entries': [], 'statementPeriod': None},
+         {'docId': 'h1', 'fileKey': 'uploads/a.pdf', 'sessionId': None, 'uploadedAt': '2026-03-01',
+-         'entries': [{'entryId': 'e2', 'page': 1, 'evidenceText': '03/14 ABC -120.00'}]},
++         'entries': [{'entryId': 'e2', 'page': 1, 'evidenceText': '03/14 ABC -120.00'}],
++         'statementPeriod': {'start': '2026-02-02', 'end': '2026-02-14'}},
+     ]
++    assert table.scan.call_args_list[0].kwargs['ExpressionAttributeNames'] == {'#d': 'date'}
+     assert table.scan.call_args_list[1].kwargs['ExclusiveStartKey'] == {'entryId': 'x'}
+ 
+ 
+@@ -105,10 +108,21 @@
+     stats, s3 = _run_main(backfill, monkeypatch, items, {'uploads/a.pdf': TEXT_PDF},
+                           {'text/h1.json': existing_doc}, ['--force'])
+     assert stats['reindexed'] == 1 and stats['written'] == 0
+-    assert json.loads(s3.put_object.call_args.kwargs['Body']) == existing_doc
++    assert json.loads(s3.put_object.call_args.kwargs['Body']) == {**existing_doc, 'statementPeriod': None}
+     assert 'kept_transcripts' in capsys.readouterr().out
+ 
+ 
++def test_force_reupload_adds_the_statement_period_to_old_receipt_docs(backfill, monkeypatch):
++    items = [{'entryId': 'a', 'fileHash': 'h1', 'fileKey': 'uploads/r.png', 'createdAt': '2026-10-08T00:00:00Z',
++              'date': '2026-02-11'}]
++    existing_doc = {'docId': 'h1', 'docType': 'receipt',
++                    'pages': [{'page': 1, 'text': 'Date: Feb 11, 2026', 'extractor': 'claude'}]}
++    _, s3 = _run_main(backfill, monkeypatch, items, {'uploads/r.png': b'png'}, {'text/h1.json': existing_doc}, ['--force'])
++    doc = json.loads(s3.put_object.call_args.kwargs['Body'])
++    assert doc['statementPeriod'] == {'start': '2026-02-11', 'end': '2026-02-11'}
++    assert doc['pages'] == existing_doc['pages']               # transcripts kept, not regenerated
++
++
+ def test_force_rewrites_text_only_docs_with_evidence_links(backfill, monkeypatch):
+     items = [{'entryId': 'a', 'fileHash': 'h1', 'fileKey': 'uploads/a.pdf', 'createdAt': '1',
+               'evidence': [{'page': 1, 'text': '03/14 ABC UTILITIES -120.00'}]}]
+@@ -208,7 +222,7 @@
+     stats, s3 = _run_main(backfill, monkeypatch, items, {'uploads/a.pdf': b'now corrupt'},
+                           {'text/h1.json': existing_doc}, ['--force'])
+     assert stats['reindexed'] == 1
+-    assert json.loads(s3.put_object.call_args.kwargs['Body']) == existing_doc
++    assert json.loads(s3.put_object.call_args.kwargs['Body']) == {**existing_doc, 'statementPeriod': None}
+ 
+ 
+ def test_failure_detail_includes_aws_error_code(backfill, monkeypatch, capsys):
+````
+
+Apply to `test/lambda/test_advisor.py`:
+
+````diff
+--- a/test/lambda/test_advisor.py
++++ b/test/lambda/test_advisor.py
+@@ -110,6 +110,13 @@
+     assert items[1]['evidence'] == {'page': 1, 'text': '03/02 TRADER JOES -64.18'}
+     assert items[0]['evidence'] is None
+     assert adv.find_transactions({'startDate': '2026-03-01', 'endDate': '2026-03-31', 'keyword': 'trader'}, ctx)[0]['entryId'] == 'e1'
++    for kw in ('Trader Joes', "trader joe's", 'TRADERJOE'):     # punctuation and spacing are ignored
++        assert [i['entryId'] for i in adv.find_transactions(
++            {'startDate': '2026-03-01', 'endDate': '2026-03-31', 'keyword': kw}, ctx)] == ['e1']
++    with pytest.raises(adv.ToolError):               # a keyword that folds to nothing is not "no filter"
++        adv.find_transactions({'startDate': '2026-03-01', 'endDate': '2026-03-31', 'keyword': "'"}, ctx)
++    with pytest.raises(adv.ToolError):
++        adv.find_transactions({'startDate': '2026-03-01', 'endDate': '2026-03-31', 'keyword': 12}, ctx)
+     assert adv.find_transactions({'startDate': '2026-03-01', 'endDate': '2026-03-31', 'accountId': 'util'}, ctx)[0]['entryId'] == 'e2'
+     cond = adv._tables[adv.ENTRIES_TABLE].query.call_args.kwargs['FilterExpression']
+     assert cond == Attr('status').eq('CONFIRMED') & Attr('sessionId').eq('abc')
+````
+
+Apply to `test/eval/test_eval_metrics.py`:
+
+````diff
+--- a/test/eval/test_eval_metrics.py
++++ b/test/eval/test_eval_metrics.py
+@@ -29,7 +29,7 @@
+ def test_good_answer_passes_every_applicable_check():
+     s = metrics.score_answer(Q_SPEND, GOOD)
+     assert s == {'id': 'q01', 'category': 'summary', 'ok': True, 'truncated': False, 'toolOk': True,
+-                 'numericOk': True, 'textOk': None, 'citationsValid': True, 'moneyCited': True}
++                 'numericOk': True, 'textOk': None, 'citationsValid': True, 'moneyCited': True, 'verbose': False}
+     assert metrics.passed(s)
+ 
+ 
+@@ -54,11 +54,15 @@
+     assert metrics.score_answer(Q_NODATA, {'answer': 'No data.'})['toolOk'] is None
+ 
+ 
+-def test_shotgun_answers_fail_numeric_exactness():
++def test_verbose_answers_are_flagged_not_failed():
+     q = {'id': 'q11', 'category': 'transaction', 'expectTools': [], 'expectAmounts': ['1850.00']}
+-    listing = 'Your February expenses: 44.10, 121.43, 15.49, 41.76, 37.27, 14.16 and 1850.00.'
+-    assert not metrics.score_answer(q, {'answer': listing})['numericOk']
+-    assert metrics.score_answer(q, {'answer': 'Rent, $1,850.00, out of $2,155.84 total.'})['numericOk']
++    listing = metrics.score_answer(q, {'answer': 'Your February expenses: 44.10, 121.43, 15.49, 41.76, 37.27, 14.16 and 1850.00.'})
++    assert listing['numericOk'] and listing['verbose']
++    brief = metrics.score_answer(q, {'answer': 'Rent, $1,850.00, out of $2,155.84 total.'})
++    assert brief['numericOk'] and brief['verbose'] is False
++    assert metrics.score_answer(Q_NODATA, {'answer': 'None.'})['verbose'] is None
++    dump = ' '.join(f'{n}.00' for n in range(100, 112)) + ' 1850.00'      # 12 extra amounts for 1 expected
++    assert not metrics.score_answer(q, {'answer': dump})['numericOk']
+ 
+ 
+ def test_amount_matching_is_whole_token():
+@@ -172,7 +176,19 @@
+               'evidence': {'n': 24, 'booked': 24, 'bookedRate': 1.0, 'evidenceCorrect': 23, 'evidenceAccuracy': 0.958},
+               'models': {'haiku-4.5': {'modelId': 'h', 'summary': summary, 'questions': rows},
+                          'sonnet-4.6': {'modelId': 's', 'summary': summary, 'questions': rows}}}
+-    md = run_eval.render(report, 'eval/results/run-x.json')
++    p70, p75 = {'rate': 0.7, 'passed': 14, 'n': 20}, {'rate': 0.75, 'passed': 15, 'n': 20}
++    runs = [{'run': 'run-a.json', 'startedAt': '2026-10-09T07:40:50+00:00', 'metricsVersion': '1', 'note': 'a | b',
++             'pass': {'haiku-4.5': p70, 'sonnet-4.6': p70}, 'rescored': {'haiku-4.5': p75, 'sonnet-4.6': p70},
++             'cost': {'haiku-4.5': '0.004663', 'sonnet-4.6': '0.014351'}, 'errors': 0}]
++    for m in report['models'].values():
++        m['holdoutSummary'] = summary
++    report['retrievalHoldout'] = metrics.retrieval_metrics([1, 1])
++    md = run_eval.render(report, 'eval/results/run-x.json', runs)
++    assert ('| 2026-10-09 | v1 | 70% (14/20) | 75% (15/20) | 70% (14/20) | 70% (14/20) | $0.004663 | $0.014351 '
++            '| 0 | a / b |') in md
++    assert '## Held-out questions' in md and 'Retrieval on held-out questions: hit@3 100% (2/2)' in md
++    assert 'Metrics v2: Answers listing extra amounts' in md
++    assert run_eval.render(report, 'x.json').count('Run history') == 0
+     assert '| Questions fully passed | 50% (1/2) | 50% (1/2) |' in md
+     assert '| Mean cost / question | $0.003000 | $0.003000 |' in md
+     assert '3 synthetic statements, 2 synthetic receipts, 26 gold transactions, 2 questions' in md
+@@ -184,3 +200,29 @@
+ def test_zero_figures_are_not_money_to_cite():
+     s = metrics.score_answer(Q_NODATA, {'answer': 'You spent $0 in December 2025.'})
+     assert s['numericOk'] and s['moneyCited'] is None
++
++
++def test_rescore_applies_current_rules_to_stored_answers(monkeypatch):
++    queries = [{**Q_SPEND}, {**Q_NODATA}]
++    monkeypatch.setattr(run_eval, 'load', lambda name: queries)
++    rows = [{'id': 'q01', 'answer': 'Total $2,100.77: rent 1850.00, food 150.00, gas 100.77 [S1].',
++             'toolsUsed': ['get_spending_summary'], 'truncated': False, 'statusCode': 200},
++            {'id': 'q19', 'answer': None, 'toolsUsed': None, 'truncated': False, 'statusCode': 500},
++            {'id': 'h01', 'split': 'holdout', 'answer': 'x', 'statusCode': 200}]          # not part of history
++    out = run_eval.rescore({'models': {'m': {'questions': rows}}}, 'm')
++    assert out == {'rate': 0.5, 'passed': 1, 'n': 2}      # verbose q01 passes under v2; the 500 still fails
++
++
++def test_history_skips_smoke_and_single_model_runs(tmp_path, monkeypatch):
++    import json as _json
++    monkeypatch.setattr(run_eval, 'RESULTS_DIR', str(tmp_path))
++    monkeypatch.setattr(run_eval, 'load', lambda name: [Q_SPEND])
++    full = {'startedAt': '2026-10-09T00:00:00+00:00', 'limit': None,
++            'models': {m: {'summary': {'passRate': None, 'meanCostUsd': None, 'errors': 0}, 'questions': []}
++                       for m in run_eval.MODELS}}
++    (tmp_path / 'run-1.json').write_text(_json.dumps(full))
++    (tmp_path / 'run-2.json').write_text(_json.dumps({**full, 'limit': 3}))
++    (tmp_path / 'run-3.json').write_text(_json.dumps({**full, 'models': {'haiku-4.5': full['models']['haiku-4.5']}}))
++    (tmp_path / 'notes.txt').write_text('x')
++    rows = run_eval.history()
++    assert [r['run'] for r in rows] == ['run-1.json'] and rows[0]['metricsVersion'] == '1'
+````
+
+Apply to `test/eval/test_eval_dataset.py`:
+
+````diff
+--- a/test/eval/test_eval_dataset.py
++++ b/test/eval/test_eval_dataset.py
+@@ -22,10 +22,13 @@
+ 
+ def test_committed_dataset_is_consistent():
+     queries, manifest, gold = _load('queries.json'), _load('manifest.json'), _load('gold_transactions.json')
++    holdout = _load('queries_holdout.json')
+     files = {f['file'] for f in manifest['files']}
+     assert all(os.path.exists(os.path.join(BASE, f)) for f in files)
+     assert len({q['id'] for q in queries}) == len(queries) == 20
+-    for q in queries:
++    assert len({q['id'] for q in holdout}) == len(holdout) == 8 and all(q['id'].startswith('h') for q in holdout)
++    assert not {q['question'] for q in holdout} & {q['question'] for q in queries}
++    for q in queries + holdout:
+         assert q['expectTools'] or q['expectNoData']
+         assert all(g['file'] in files for g in q['goldDocs'])
+         assert all(D(a) > 0 for a in q['expectAmounts'])
+````
+
+- [ ] **Step 2: Run them to verify they fail.**
+
+Run: `python -m pytest test/lambda test/eval -q`
+Expected: failures and errors, including:
+- an ImportError for `statement_period`;
+- the keyword test, on 'Trader Joes';
+- the backfill test (no `statementPeriod`);
+- the parse text-doc test;
+- the backfill transcripts test;
+- the dataset test (no held-out file yet);
+- the verbose, dump, rescore and history tests.
+
+- [ ] **Step 3: Implement.**
+
+Apply to `lambda/common/penny_common/textdoc.py`:
+
+````diff
+--- a/lambda/common/penny_common/textdoc.py
++++ b/lambda/common/penny_common/textdoc.py
+@@ -1,6 +1,8 @@
+ """Shape of text/{docId}.json — written by ParseLambda and the backfill script, read by IndexLambda."""
+ import re
++from datetime import date, datetime, timedelta, timezone
+ 
++_ISO_DAY = re.compile(r'\d{4}-\d{2}-\d{2}')
+ _UUID_PREFIX = re.compile(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}-', re.I)
+ 
+ 
+@@ -20,6 +22,37 @@
+     return _UUID_PREFIX.sub('', name, count=1) or name
+ 
+ 
++def _real_day(value):
++    if not isinstance(value, str) or not _ISO_DAY.fullmatch(value):
++        return None
++    try:
++        return date.fromisoformat(value)              # rejects impossible days such as 2026-02-30
++    except ValueError:
++        return None
++
++
++def statement_period(dates, uploaded_at=None) -> 'dict | None':
++    """{'start', 'end'} spanning the document's entry dates, or None if there are none.
++
++    IndexLambda falls back to the period end for a chunk's yearMonth when the text has no
++    NN/NN transaction dates (e.g. a receipt printed "Feb 11, 2026"), and uses it as the reference
++    year for yearless NN/NN dates. So impossible days and days after the upload (+1 day, for time
++    zones) are ignored: one mistyped future date must not move a whole statement into next year.
++    """
++    days = sorted(filter(None, map(_real_day, dates)))
++    upload = _upload_day(uploaded_at)
++    if upload:
++        days = [d for d in days if d <= upload + timedelta(days=1)]
++    return {'start': days[0].isoformat(), 'end': days[-1].isoformat()} if days else None
++
++
++def _upload_day(uploaded_at):
++    try:
++        return datetime.fromisoformat(str(uploaded_at).replace('Z', '+00:00')).astimezone(timezone.utc).date()
++    except ValueError:
++        return None
++
++
+ def build_text_doc(doc_id: str, file_key: str, doc_type: str, pages: list, entries: list,
+                    session_id, uploaded_at: str, statement_period=None) -> dict:
+     """Build the text/{docId}.json payload.
+````
+
+Apply to `lambda/common/penny_common/textnorm.py`:
+
+````diff
+--- a/lambda/common/penny_common/textnorm.py
++++ b/lambda/common/penny_common/textnorm.py
+@@ -3,6 +3,7 @@
+ import unicodedata
+ 
+ _WS = re.compile(r'\s+')
++_NON_WORD = re.compile(r'[\W_]+')         # Unicode-aware: CJK and other letters are word characters
+ _INVISIBLE = dict.fromkeys(map(ord, '\u200b\u200c\u200d\xad\ufeff'))  # zero-width chars, soft hyphen, BOM
+ 
+ 
+\ No newline at end of file
+@@ -12,6 +13,14 @@
+     return _WS.sub(' ', text).strip().casefold()
+ 
+ 
++def fold(text: str) -> str:
++    """Letters and digits only, accents removed, casefolded: "Trader Joes" == "TRADER JOE'S #552",
++    "Crème" == "CREME", and "星巴克" stays "星巴克" (never folds to empty for non-Latin text)."""
++    decomposed = unicodedata.normalize('NFKD', text or '')
++    stripped = ''.join(ch for ch in decomposed if not unicodedata.combining(ch))
++    return _NON_WORD.sub('', stripped.casefold())
++
++
+ def contains_normalized(haystack: str, needle: str) -> bool:
+     """True if the normalized needle occurs in the normalized haystack; an empty needle never matches."""
+     n = normalize(needle)
+\ No newline at end of file
+````
+
+Apply to `lambda/parse/index.py`:
+
+````diff
+--- a/lambda/parse/index.py
++++ b/lambda/parse/index.py
+@@ -16,7 +16,7 @@
+ from penny_common.masking import mask_identifiers
+ from penny_common.pdftext import PdfTextError, extract_pdf_pages
+ from penny_common.session import valid_session_id
+-from penny_common.textdoc import build_text_doc, doc_id_for, text_doc_key
++from penny_common.textdoc import build_text_doc, doc_id_for, statement_period, text_doc_key
+ from penny_common.textnorm import contains_normalized
+ 
+ dynamodb = boto3.resource('dynamodb')
+@@ -540,8 +540,10 @@
+         print(json.dumps({'event': 'text_doc_skipped_empty', 'docId': doc_id}))
+     elif pages:
+         try:
++            uploaded_at = datetime.now(timezone.utc).isoformat()
++            period = statement_period([e['date'] for e in map(normalize_entry, entries) if e], uploaded_at)
+             write_text_doc(build_text_doc(doc_id, key, source_type, pages, saved, session_id,
+-                                          datetime.now(timezone.utc).isoformat()))
++                                          uploaded_at, statement_period=period))
+         except Exception as e:  # bookkeeping already succeeded; backfill_index.py can recover
+             print(json.dumps({'event': 'text_doc_write_failed', 'docId': doc_id, 'errorType': type(e).__name__}))
+     print(json.dumps({'event': 'parsed', 'docId': doc_id, 'entries': len(entries), 'evidence': len(saved)}))
+````
+
+Apply to `scripts/backfill_index.py`:
+
+````diff
+--- a/scripts/backfill_index.py
++++ b/scripts/backfill_index.py
+@@ -33,7 +33,7 @@
+ from botocore.exceptions import ClientError  # noqa: E402
+ 
+ from penny_common.pdftext import PdfTextError, extract_pdf_pages  # noqa: E402
+-from penny_common.textdoc import build_text_doc, display_name, doc_id_for, text_doc_key  # noqa: E402
++from penny_common.textdoc import build_text_doc, display_name, doc_id_for, statement_period, text_doc_key  # noqa: E402
+ 
+ TRANSCRIBE_MODEL_ID = 'us.anthropic.claude-sonnet-4-6'
+ IMAGE_TYPES = {'jpg': 'image/jpeg', 'jpeg': 'image/jpeg', 'png': 'image/png'}
+@@ -57,7 +57,8 @@
+ def list_documents(entries_table) -> list:
+     """One record per uploaded file (per session), from the earliest entry that references it."""
+     docs = {}
+-    kwargs = {'ProjectionExpression': 'entryId, fileHash, fileKey, sessionId, createdAt, evidence'}
++    kwargs = {'ProjectionExpression': 'entryId, fileHash, fileKey, sessionId, createdAt, evidence, #d',
++              'ExpressionAttributeNames': {'#d': 'date'}}       # "date" is a DynamoDB reserved word
+     while True:
+         resp = entries_table.scan(**kwargs)
+         for item in resp.get('Items', []):
+@@ -69,15 +70,17 @@
+             doc = docs.get(doc_id)
+             if doc is None:
+                 doc = docs[doc_id] = {'docId': doc_id, 'fileKey': file_key, 'sessionId': item.get('sessionId'),
+-                                      'uploadedAt': created, 'entries': []}
++                                      'uploadedAt': created, 'entries': [], 'dates': []}
+             elif _age_key(created) < _age_key(doc['uploadedAt']):
+                 doc.update(fileKey=file_key, uploadedAt=created)
++            doc['dates'].append(item.get('date'))
+             link = _evidence_link(item)
+             if link:
+                 doc['entries'].append(link)
+         if 'LastEvaluatedKey' not in resp:
+             for doc in docs.values():
+                 doc['entries'].sort(key=lambda e: e['entryId'])
++                doc['statementPeriod'] = statement_period(doc.pop('dates'), doc['uploadedAt'])
+             return sorted(docs.values(), key=lambda d: d['docId'])
+         kwargs['ExclusiveStartKey'] = resp['LastEvaluatedKey']
+ 
+@@ -161,8 +164,11 @@
+     existing = read_text_doc(s3, args.bucket, doc['docId'])
+     if existing is not None and not args.force:
+         return 'exists', None
++    if existing is not None:
++        existing['statementPeriod'] = doc.get('statementPeriod')   # older docs never had one
+     if existing is not None and has_transcripts(existing):
+-        # Re-upload unchanged: re-fires IndexLambda without regenerating (or paying for) text.
++        # Re-upload with the period refreshed: re-fires IndexLambda without regenerating (or
++        # paying for) the transcribed text.
+         if not args.dry_run:
+             _put_text_doc(s3, args.bucket, existing)
+         return 'reindexed', 'kept_transcripts'
+@@ -178,7 +184,8 @@
+         return 'skipped', pages
+     if not args.dry_run:
+         _put_text_doc(s3, args.bucket, build_text_doc(doc['docId'], doc['fileKey'], doc_type, pages,
+-                                                      doc['entries'], doc['sessionId'], doc['uploadedAt']))
++                                                      doc['entries'], doc['sessionId'], doc['uploadedAt'],
++                                                      statement_period=doc.get('statementPeriod')))
+     return 'written', f'{len(pages)} pages'
+````
+
+Apply to `lambda/advisor/index.py`:
+
+````diff
+--- a/lambda/advisor/index.py
++++ b/lambda/advisor/index.py
+@@ -21,6 +21,7 @@
+ from penny_common.ledger import account_net, confirmed_entries, entry_amount, flows, lines_for
+ from penny_common.pricing import estimate_cost_usd
+ from penny_common.session import OWNER, session_from_headers
++from penny_common.textnorm import fold
+ 
+ # Two clients with tight timeouts: the whole request must finish inside API Gateway's 29 s.
+ # Converse is not retried here (a throttle becomes a 503 the client can retry).
+@@ -88,9 +89,11 @@
+     }},
+     {'toolSpec': {
+         'name': 'get_spending_summary',
+-        'description': ('Confirmed income/expense totals (net of refunds) for a month range of at most 36 '
+-                        'months, grouped by month or by expense account. Months with no entries are omitted. '
+-                        'Use it for totals, trends and "how much did I spend" questions.'),
++        'description': ('Confirmed totals (net of refunds) for a month range of at most 36 months. '
++                        'groupBy "month" returns each month\'s total income, total expense and net: use it for '
++                        '"how much did I spend/earn" and net-income questions. groupBy "account" returns '
++                        'spending per expense account only (no income): use it for breakdowns. '
++                        'Months with no entries are omitted.'),
+         'inputSchema': {'json': {
+             'type': 'object',
+             'properties': {
+@@ -279,11 +282,16 @@
+             raise ToolError('minAmount must be a decimal number')
+         if not min_amount.is_finite():
+             raise ToolError('minAmount must be a finite number')
+-    keyword = (args.get('keyword') or '').strip().lower()
++    raw_keyword = args.get('keyword') or ''
++    if not isinstance(raw_keyword, str):
++        raise ToolError('keyword must be a string')
++    keyword = fold(raw_keyword)       # punctuation, spacing, case and accents are ignored
++    if raw_keyword.strip() and not keyword:
++        raise ToolError('keyword must contain letters or digits')   # never "no filter" by accident
+     account = args.get('accountId')
+     entries = sorted(_entries(ctx, start, end), key=lambda e: (e['date'], e['entryId']), reverse=True)
+     if keyword:                          # cheap filter first: no line reads for non-matching entries
+-        entries = [e for e in entries if keyword in (e.get('description') or '').lower()]
++        entries = [e for e in entries if keyword in fold(e.get('description') or '')]
+     if not account and min_amount is None:
+         entries = entries[:limit]        # nothing else filters, so only the newest `limit` need lines
+     lines = _lines(entries)
+````
+
+Apply to `eval/metrics.py`:
+
+````diff
+--- a/eval/metrics.py
++++ b/eval/metrics.py
+@@ -12,7 +12,15 @@
+ _AMOUNT = re.compile(r'(?<![\d.,])\d{1,3}(?:,\d{3})+\.\d{2}(?![\d])|(?<![\d.,])\d+\.\d{2}(?![\d])')
+ _DOLLARS = re.compile(r'\$\s?(\d[\d,]*(?:\.\d+)?)')        # "$2,100" or "$0" in no-data answers
+ _WS = re.compile(r'\s+')
+-MAX_EXTRA_FACTOR = 2      # more than 2x as many unexpected amounts as expected ones = a shotgun answer
++MAX_EXTRA_FACTOR = 2      # more than 2x as many other amounts as expected ones = a "verbose" answer
++DUMP_FACTOR = 10          # more than 10x = listing everything to hit the right number: fails
++# Bump when a scoring rule changes, and say what changed in RULE_CHANGES (rendered into the report).
++METRICS_VERSION = '2'
++RULE_CHANGES = {
++    '2': 'Answers listing extra amounts (e.g. a correct total plus its category breakdown) no longer fail '
++         f'numeric exactness up to {DUMP_FACTOR}x the expected count; between {MAX_EXTRA_FACTOR}x and '
++         f'{DUMP_FACTOR}x they are counted separately as "verbose".',
++}
+ 
+ 
+ def amounts_in(text: str) -> set:
+@@ -35,12 +43,13 @@
+     truncated = bool(resp.get('truncated'))
+     usable = ok and not truncated
+ 
+-    numeric = None
++    numeric = verbose = None
+     if q.get('expectNoData'):
+         numeric = usable and not any(a != 0 for a in found | dollar_figures_in(answer))
+     elif expected:
+-        extra = found - expected
+-        numeric = usable and expected <= found and len(extra) <= MAX_EXTRA_FACTOR * len(expected)
++        extra = len(found - expected)
++        numeric = usable and expected <= found and extra <= DUMP_FACTOR * len(expected)
++        verbose = (extra > MAX_EXTRA_FACTOR * len(expected)) if usable else None
+     text = None
+     if q.get('expectText'):
+         text = usable and q['expectText'].lower() in answer.lower()
+@@ -57,6 +66,7 @@
+         'citationsValid': (resp.get('invalidCitations', 0) == 0) if (usable and citations) else None,
+         # Of the answers that state money, how many cite at least one source.
+         'moneyCited': bool(citations) if (usable and has_money) else None,
++        'verbose': verbose,
+     }
+ 
+ 
+@@ -160,6 +170,7 @@
+         'textMatch': _rate(scores, 'textOk'),
+         'citationValidity': _rate(scores, 'citationsValid'),
+         'moneyCited': _rate(scores, 'moneyCited'),
++        'verbose': _rate(scores, 'verbose'),
+         'meanCostUsd': f'{total / len(priced):.6f}' if priced else None,
+         'totalCostUsd': f'{total:.6f}' if priced else None,
+         'unpricedAnswers': sum(1 for c in costs if c is None),
+````
+
+Apply to `eval/run_eval.py`:
+
+````diff
+--- a/eval/run_eval.py
++++ b/eval/run_eval.py
+@@ -218,7 +218,7 @@
+     return metrics.retrieval_metrics(ranks)
+ 
+ 
+-def run(site, model_names, limit):
++def run(site, model_names, limit, note=None):
+     state = load_state()
+     session = state['session']
+     api = Api(site, session)
+@@ -229,21 +229,23 @@
+         sys.exit(f'eval ledger does not match the gold transactions ({ledger}); fix the session before scoring')
+     if unindexed(entries):
+         sys.exit(f'{unindexed(entries)} evidence items are not indexed yet; re-run setup')
+-    queries = load('queries.json')
+     full = limit is None and list(model_names) == list(MODELS)
+-    queries = queries[:limit]
++    queries = load('queries.json')[:limit]
++    holdout = load('queries_holdout.json') if limit is None else []    # smoke runs skip the held-out set
+     adv, env = load_advisor()
+     from penny_common.chunking import CHUNKER_VERSION
+     report = {'startedAt': datetime.now(timezone.utc).isoformat(timespec='seconds'),
+               'datasetVersion': manifest['datasetVersion'], 'manifest': manifest['files'],
+               'embedDimensions': env.get('EMBED_DIMENSIONS'), 'vectorIndex': env.get('VECTOR_INDEX'),
+-              'chunkerVersion': CHUNKER_VERSION, 'limit': limit, 'modelsRun': list(model_names),
++              'chunkerVersion': CHUNKER_VERSION, 'metricsVersion': metrics.METRICS_VERSION, 'note': note,
++              'limit': limit, 'modelsRun': list(model_names),
+               'ledger': ledger, 'retrieval': retrieval(adv, session, queries),
++              'retrievalHoldout': retrieval(adv, session, holdout),
+               'evidence': metrics.evidence_metrics(gold, entries), 'models': {}}
+     for label in model_names:
+         adv.MODEL_ID = MODELS[label]
+         rows, costs, latencies = [], [], []
+-        for i, q in enumerate(queries):
++        for i, (split, q) in enumerate([('tuned', q) for q in queries] + [('holdout', q) for q in holdout]):
+             status, body, latency, logs = ask(adv, session, q['question'])
+             ok = status == 200
+             if i == 0 and not ok:          # wrong model id / no model access: fail fast
+@@ -252,7 +254,7 @@
+                          f'check that {MODELS[label]} is enabled in Bedrock')
+             score = metrics.score_answer(q, body if ok else {}, ok=ok)
+             cost = (body.get('usage') or {}).get('estCostUsd') if ok else None
+-            rows.append({**score, 'pass': metrics.passed(score), 'question': q['question'],
++            rows.append({**score, 'split': split, 'pass': metrics.passed(score), 'question': q['question'],
+                          'answer': body.get('answer') if ok else None, 'statusCode': status,
+                          'toolsUsed': body.get('toolsUsed'), 'evidenceStatus': body.get('evidenceStatus'),
+                          'latencyMs': latency, 'estCostUsd': cost, **logs})
+@@ -261,17 +263,22 @@
+                 latencies.append(latency)
+             print(f'[{label}] {q["id"]} {"ok  " if rows[-1]["pass"] else "MISS"} {latency:>6} ms  '
+                   f'${cost if cost is not None else "n/a"}' + ('' if ok else f'  HTTP {status}'))
+-        report['models'][label] = {'modelId': MODELS[label],
+-                                   'summary': metrics.summarize(rows, costs, latencies), 'questions': rows}
++        def part(name):
++            idx = [k for k, r in enumerate(rows) if r['split'] == name]
++            return metrics.summarize([rows[k] for k in idx], [costs[k] for k in idx],
++                                     [rows[k]['latencyMs'] for k in idx if rows[k]['ok']])
++        report['models'][label] = {'modelId': MODELS[label], 'summary': part('tuned'),
++                                   'holdoutSummary': part('holdout') if holdout else None, 'questions': rows}
+     raw_path = write_raw(report)
+-    errors = sum(m['summary']['errors'] for m in report['models'].values())
++    errors = sum(m['summary']['errors'] + (m['holdoutSummary'] or {}).get('errors', 0)
++                 for m in report['models'].values())
+     if not full:
+         print('partial run (--limit or --models): docs/evaluation-results.md left unchanged')
+     elif errors:
+         print(f'{errors} answers errored: docs/evaluation-results.md left unchanged; see the raw JSON')
+     else:
+         with open(REPORT, 'w') as f:
+-            f.write(render(report, os.path.relpath(raw_path, ROOT)))
++            f.write(render(report, os.path.relpath(raw_path, ROOT), history()))
+         print(f'wrote {os.path.relpath(REPORT, ROOT)}')
+ 
+ 
+@@ -283,6 +290,38 @@
+         json.dump(report, f, indent=2)
+     print(f'wrote {os.path.relpath(raw_path, ROOT)}')
+     return raw_path
++
++
++def rescore(run: dict, model: str) -> dict:
++    """Pass rate of a stored run's tuned questions under the *current* scoring rules."""
++    queries = {q['id']: q for q in load('queries.json')}
++    scores = []
++    for row in run['models'][model]['questions']:
++        if row.get('split', 'tuned') != 'tuned' or row['id'] not in queries:
++            continue
++        ok = row.get('statusCode', 200) == 200
++        resp = {'answer': row.get('answer'), 'toolsUsed': row.get('toolsUsed'), 'truncated': row.get('truncated')}
++        scores.append({'pass': metrics.passed(metrics.score_answer(queries[row['id']], resp, ok=ok))})
++    return metrics._rate(scores, 'pass')
++
++
++def history() -> list:
++    """One summary row per full run in eval/results (oldest first), for the report's history table."""
++    rows = []
++    for name in sorted(os.listdir(RESULTS_DIR)) if os.path.isdir(RESULTS_DIR) else []:
++        if not (name.startswith('run-') and name.endswith('.json')):
++            continue
++        with open(os.path.join(RESULTS_DIR, name)) as f:
++            r = json.load(f)
++        if r.get('limit') is not None or set(r.get('models', {})) != set(MODELS):
++            continue                                   # smoke / single-model runs are not history
++        rows.append({'run': name, 'startedAt': r['startedAt'], 'metricsVersion': r.get('metricsVersion', '1'),
++                     'note': r.get('note'),
++                     'pass': {m: d['summary']['passRate'] for m, d in r['models'].items()},
++                     'rescored': {m: rescore(r, m) for m in r['models']},
++                     'errors': sum(d['summary']['errors'] for d in r['models'].values()),
++                     'cost': {m: d['summary']['meanCostUsd'] for m, d in r['models'].items()}})
++    return rows
+ 
+ 
+ def _pct(r):
+@@ -303,7 +342,7 @@
+     return '—' if v is None else f'{v / 1000:.1f} s'
+ 
+ 
+-def render(r, raw_path) -> str:
++def render(r, raw_path, runs=()) -> str:
+     models = list(r['models'])
+     files = r['manifest']
+     kinds = {k: sum(1 for f in files if f['kind'] == k) for k in ('statement', 'receipt')}
+@@ -312,6 +351,7 @@
+             ('Numeric exactness', 'numericExactness', _pct), ('Text match', 'textMatch', _pct),
+             ('Citation validity (answers with citations)', 'citationValidity', _pct),
+             ('Answers stating money that cite a source', 'moneyCited', _pct),
++            (f'Verbose (> {metrics.MAX_EXTRA_FACTOR}x extra amounts; not a failure)', 'verbose', _pct),
+             ('Errors', 'errors', str), ('Truncated', 'truncated', str),
+             ('Mean cost / question', 'meanCostUsd', _usd), ('Latency p50', 'latencyP50Ms', _secs),
+             ('Latency p95', 'latencyP95Ms', _secs)]
+@@ -324,10 +364,25 @@
+            f'| Ledger check | booked entries equal the gold transactions ({r["ledger"]["booked"]}/{r["ledger"]["expected"]}) |',
+            f'| Embeddings | Titan Text Embeddings V2, {r["embedDimensions"]} dims, index `{r["vectorIndex"]}` |',
+            f'| Chunker version | `{r["chunkerVersion"]}` |',
++           f'| Metrics version | `{r.get("metricsVersion", "1")}` |',
+            '| Models | ' + ', '.join(f'{m} (`{r["models"][m]["modelId"]}`)' for m in models) + ' |', '',
+            '## Agent', '', '| Metric | ' + ' | '.join(models) + ' |', '|---|' + '---|' * len(models)]
+     for label, key, fmt in rows:
+-        out.append(f'| {label} | ' + ' | '.join(fmt(r['models'][m]['summary'][key]) for m in models) + ' |')
++        out.append(f'| {label} | ' + ' | '.join(fmt(r['models'][m]['summary'].get(key)) for m in models) + ' |')
++    if all(r['models'][m].get('holdoutSummary') for m in models):
++        hold = [('Questions fully passed', 'passRate', _pct), ('Tool selection', 'toolSelection', _pct),
++                ('Numeric exactness', 'numericExactness', _pct), ('Errors', 'errors', str),
++                ('Mean cost / question', 'meanCostUsd', _usd)]
++        out += ['', '## Held-out questions', '',
++                'Paraphrases written after the baseline misses were diagnosed and before the post-fix run; never '
++                'used to tune prompts or tools (`eval/dataset/v1/queries_holdout.json`). They test whether the fixes '
++                'hold up under rewording; they are not an independent test set.', '',
++                '| Metric | ' + ' | '.join(models) + ' |', '|---|' + '---|' * len(models)]
++        for label, key, fmt in hold:
++            out.append(f'| {label} | ' + ' | '.join(fmt(r['models'][m]['holdoutSummary'].get(key)) for m in models) + ' |')
++        rh = r.get('retrievalHoldout') or {}
++        if rh.get('n'):
++            out.append(f'\nRetrieval on held-out questions: hit@3 {_frac(rh["hit@3"], rh["n"])}, MRR {rh["mrr"]}.')
+     ret, ev = r['retrieval'], r['evidence']
+     out += ['', '## Retrieval (search_documents, same session filter as the agent)', '',
+             f'{ret["n"]} questions with gold documents: hit@3 {_frac(ret["hit@3"], ret["n"])}, '
+@@ -338,14 +393,30 @@
+             f'({_frac(ev["evidenceAccuracy"], ev["booked"])}).', '',
+             '## Misses', '']
+     for m in models:
+-        misses = [q for q in r['models'][m]['questions'] if not q['pass']]
++        misses = [q for q in r['models'][m]['questions'] if not q['pass']]   # tuned and held-out
+         out.append(f'- **{m}:** ' + (', '.join(f'{q["id"]} ({q["category"]})' for q in misses) or 'none'))
++    if runs:
++        out += ['', '## Run history', '',
++                'Every full run is kept in `eval/results/`, scored on the 20 tuned questions. "As scored" uses the '
++                'rules of that run; "current rules" re-scores its stored answers with today\'s rules, so code '
++                'fixes and rule changes can be told apart. Code fixes are in each run\'s note.', '',
++                '| Run | Rules | ' + ' | '.join(f'{m} as scored | {m} current rules' for m in models) + ' | '
++                + ' | '.join(f'{m} $/question' for m in models) + ' | Errors | Note |',
++                '|---|---|' + '---|' * (3 * len(models)) + '---|---|']
++        for h in runs:
++            out.append(f'| {h["startedAt"][:10]} | v{h["metricsVersion"]} | '
++                       + ' | '.join(f'{_pct(h["pass"].get(m))} | {_pct(h["rescored"].get(m))}' for m in models) + ' | '
++                       + ' | '.join(_usd(h['cost'].get(m)) for m in models)
++                       + f' | {h["errors"]} | {(h["note"] or "").replace("|", "/")} |')
++        out += [''] + [f'- Metrics v{v}: {text}' for v, text in sorted(metrics.RULE_CHANGES.items())]
+     out += ['', '## Method and caveats', '',
+             '- Deterministic checks only, no LLM judge. Every rate shows its denominator; a check that does '
+             'not apply to a question is excluded from that rate. Errored or truncated answers fail.',
+             '- **Numeric exactness:** every gold amount appears in the answer (two-decimal amounts compared as '
+-            f'Decimal, sign ignored), and the answer lists at most {metrics.MAX_EXTRA_FACTOR}x as many other '
+-            'amounts. No-data questions pass only if the answer states no non-zero figure ($-prefixed or two-decimal).',
++            'Decimal, sign ignored). Answers listing more than '
++            f'{metrics.MAX_EXTRA_FACTOR}x as many other amounts are counted as verbose; more than '
++            f'{metrics.DUMP_FACTOR}x fails (listing everything to hit the right number). No-data '
++            'questions pass only if the answer states no non-zero figure ($-prefixed or two-decimal).',
+             '- **Text match:** a case-insensitive substring (account digits, item names). **Tool selection:** '
+             'the expected tool was among the tools called (extra tools are allowed); questions expecting no tool are excluded.',
+             '- **Citation validity:** of answers that carry citations, the share with no invalid ref removed by '
+@@ -371,6 +442,7 @@
+     p.add_argument('--site', help='CloudFront URL (default: FinanceStack SiteUrl output)')
+     p.add_argument('--models', default=','.join(MODELS), help=f'comma-separated, from: {", ".join(MODELS)}')
+     p.add_argument('--limit', type=int, default=None, help='only the first N questions (smoke run)')
++    p.add_argument('--note', help='what changed since the previous run (shown in the run history)')
+     a = p.parse_args()
+     site = (a.site or site_url()).rstrip('/')
+     if a.command == 'setup':
+@@ -380,7 +452,7 @@
+         unknown = [m for m in names if m not in MODELS]
+         if unknown:
+             sys.exit(f'unknown model(s): {unknown}')
+-        run(site, names, a.limit)
++        run(site, names, a.limit, a.note)
+ 
+ 
+ if __name__ == '__main__':
+````
+
+Apply to `eval/generate_dataset.py`:
+
+````diff
+--- a/eval/generate_dataset.py
++++ b/eval/generate_dataset.py
+@@ -184,12 +184,33 @@
+     add('no_data', 'How much did I spend in December 2025?', [], no_data=True)
+     add('no_data', 'What is my credit score?', [], no_data=True)
+ 
++    # Held-out paraphrases, written before the post-fix re-run and never used to tune prompts or
++    # tools: reported separately so eval-driven fixes can be checked for over-fitting.
++    tuned, q = q, []
++    add('summary', 'What were my total expenses for February 2026?', ['get_spending_summary'],
++        [money(month_spend['2026-02'])])
++    add('summary', 'How much money came in during March 2026?', ['get_spending_summary'],
++        [money(month_income['2026-03'])])
++    add('transaction', 'What did I pay for rent in January 2026?', ['find_transactions'], ['1850.00'])
++    add('transaction', 'How much was my Netflix subscription in February 2026?', ['find_transactions'],
++        [amt(by('NETFLIX.COM', '2026-02')[0])])
++    add('transaction', 'What did I spend on fuel at Shell in January 2026?', ['find_transactions'],
++        [amt(by('SHELL OIL 57442', '2026-01')[0])])
++    add('document', 'According to my March 2026 bank statement, what was the ending balance?',
++        ['search_documents'], [file_of['2026-03']['endingBalance']], [doc('statement_2026_03.pdf')])
++    add('document', 'What was the subtotal on my Ace Hardware receipt from February 2026?', ['search_documents'],
++        [money(sum(p for _, p in RECEIPTS[0]['items']))], [doc('receipt_2026_02_hardware.png')])
++    add('no_data', 'How much did I spend in June 2025?', [], no_data=True)
++    holdout = [{**h, 'id': 'h' + h['id'][1:]} for h in q]
++
+     manifest = {'datasetVersion': DATASET_VERSION, 'seed': SEED, 'files': files}
+-    for name, obj in [('manifest.json', manifest), ('gold_transactions.json', gold), ('queries.json', q)]:
++    for name, obj in [('manifest.json', manifest), ('gold_transactions.json', gold), ('queries.json', tuned),
++                      ('queries_holdout.json', holdout)]:
+         with open(os.path.join(out, name), 'w') as f:
+             json.dump(obj, f, indent=2)
+             f.write('\n')
+-    print(f'wrote {len(files)} files, {len(gold)} gold transactions, {len(q)} questions to {out}')
++    print(f'wrote {len(files)} files, {len(gold)} gold transactions, {len(tuned)} questions '
++          f'(+{len(holdout)} held out) to {out}')
+ 
+ 
+ if __name__ == '__main__':
+````
+
+Run: `python eval/generate_dataset.py` and expect `… 20 questions (+8 held out) …`. Only `queries_holdout.json` is new; the other dataset files are byte-identical.
+
+- [ ] **Step 4: Verify.**
+
+Run: `python -m pytest test/lambda test/eval -q` and expect `393 passed`.
+Run: `npx jest` and expect `Tests: 43 passed, 43 total`.
+
+- [ ] **Step 5: Commit (user)**
+
+```bash
+git add lambda/common/penny_common/textdoc.py lambda/common/penny_common/textnorm.py lambda/parse/index.py scripts/backfill_index.py lambda/advisor/index.py eval/metrics.py eval/run_eval.py eval/generate_dataset.py eval/dataset/v1/queries_holdout.json test/lambda/test_penny_common.py test/lambda/test_parse_evidence.py test/lambda/test_backfill.py test/lambda/test_advisor.py test/eval/test_eval_metrics.py test/eval/test_eval_dataset.py docs/superpowers/plans/2026-10-08-rag-frontend-eval.md
+git commit -m "fix: date receipts by their entries, fold keyword punctuation, clarify summary tool; eval metrics v2"
+```
+
+- [ ] **Step 6: Re-run (user).** `textdoc.py` is in the layer, so rebuild the layer and deploy, then evaluate in a **fresh** session, because the old session's receipts were indexed with the wrong month:
+
+```bash
+./scripts/build-layer.sh && npx cdk deploy
+rm -rf eval/.state
+python eval/run_eval.py setup
+python eval/run_eval.py run --note "7b: receipt statementPeriod, keyword folding, summary tool description; metrics v2"
+```
+
+---
+
 ### Task 8: Deploy, frontend upload, and eval run (user)
 
 `penny_common` gained `fx.py`, so **the layer must be rebuilt**. Docker must be running.
@@ -3353,5 +4236,5 @@ git commit -m "docs: rewrite README around architecture, cost and eval results"
   - ¥ on USD documents → Tasks 1 and 2.
 - **Found and fixed during Task 1 review:** `PUT /api/entries/{id}/confirm` wrote client lines without a balance check, dropped FX fields, and did not check the session. All three are fixed in Task 1.
 - **Test counts:**
-  - pytest: 303 → 364 (Task 1) → 367 (Task 6) → 386 (Task 7).
+  - pytest: 303 → 364 (Task 1) → 367 (Task 6) → 386 (Task 7) → 393 (Task 7b).
   - jest: 20 → 21 (Task 1) → 36 (Task 3) → 43 (Task 4).

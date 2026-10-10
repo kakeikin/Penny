@@ -1,0 +1,120 @@
+[
+  {
+    "id": "h01",
+    "category": "summary",
+    "question": "What were my total expenses for February 2026?",
+    "expectTools": [
+      "get_spending_summary"
+    ],
+    "expectAmounts": [
+      "2155.84"
+    ],
+    "expectText": null,
+    "goldDocs": [],
+    "expectNoData": false
+  },
+  {
+    "id": "h02",
+    "category": "summary",
+    "question": "How much money came in during March 2026?",
+    "expectTools": [
+      "get_spending_summary"
+    ],
+    "expectAmounts": [
+      "3200.00"
+    ],
+    "expectText": null,
+    "goldDocs": [],
+    "expectNoData": false
+  },
+  {
+    "id": "h03",
+    "category": "transaction",
+    "question": "What did I pay for rent in January 2026?",
+    "expectTools": [
+      "find_transactions"
+    ],
+    "expectAmounts": [
+      "1850.00"
+    ],
+    "expectText": null,
+    "goldDocs": [],
+    "expectNoData": false
+  },
+  {
+    "id": "h04",
+    "category": "transaction",
+    "question": "How much was my Netflix subscription in February 2026?",
+    "expectTools": [
+      "find_transactions"
+    ],
+    "expectAmounts": [
+      "15.49"
+    ],
+    "expectText": null,
+    "goldDocs": [],
+    "expectNoData": false
+  },
+  {
+    "id": "h05",
+    "category": "transaction",
+    "question": "What did I spend on fuel at Shell in January 2026?",
+    "expectTools": [
+      "find_transactions"
+    ],
+    "expectAmounts": [
+      "30.26"
+    ],
+    "expectText": null,
+    "goldDocs": [],
+    "expectNoData": false
+  },
+  {
+    "id": "h06",
+    "category": "document",
+    "question": "According to my March 2026 bank statement, what was the ending balance?",
+    "expectTools": [
+      "search_documents"
+    ],
+    "expectAmounts": [
+      "5635.84"
+    ],
+    "expectText": null,
+    "goldDocs": [
+      {
+        "file": "statement_2026_03.pdf",
+        "page": 1
+      }
+    ],
+    "expectNoData": false
+  },
+  {
+    "id": "h07",
+    "category": "document",
+    "question": "What was the subtotal on my Ace Hardware receipt from February 2026?",
+    "expectTools": [
+      "search_documents"
+    ],
+    "expectAmounts": [
+      "29.77"
+    ],
+    "expectText": null,
+    "goldDocs": [
+      {
+        "file": "receipt_2026_02_hardware.png",
+        "page": 1
+      }
+    ],
+    "expectNoData": false
+  },
+  {
+    "id": "h08",
+    "category": "no_data",
+    "question": "How much did I spend in June 2025?",
+    "expectTools": [],
+    "expectAmounts": [],
+    "expectText": null,
+    "goldDocs": [],
+    "expectNoData": true
+  }
+]

@@ -190,6 +190,8 @@ def test_s3_event_writes_evidence_and_text_doc(parse, monkeypatch):
     assert doc['pages'][0]['extractor'] == 'pypdf'
     assert doc['entries'] == [{'entryId': entry_item['entryId'], 'page': 1,
                                'evidenceText': '03/14 ABC UTILITIES -120.00'}]
+    # IndexLambda dates chunks without NN/NN lines (e.g. receipts) from this period.
+    assert doc['statementPeriod'] == {'start': entry_item['date'], 'end': entry_item['date']}
 
 
 def _run_s3_event(parse, monkeypatch, file_bytes, key, claude_result, seen=None):

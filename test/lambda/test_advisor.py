@@ -110,6 +110,13 @@ def test_find_transactions_filters_and_carries_evidence(adv):
     assert items[1]['evidence'] == {'page': 1, 'text': '03/02 TRADER JOES -64.18'}
     assert items[0]['evidence'] is None
     assert adv.find_transactions({'startDate': '2026-03-01', 'endDate': '2026-03-31', 'keyword': 'trader'}, ctx)[0]['entryId'] == 'e1'
+    for kw in ('Trader Joes', "trader joe's", 'TRADERJOE'):     # punctuation and spacing are ignored
+        assert [i['entryId'] for i in adv.find_transactions(
+            {'startDate': '2026-03-01', 'endDate': '2026-03-31', 'keyword': kw}, ctx)] == ['e1']
+    with pytest.raises(adv.ToolError):               # a keyword that folds to nothing is not "no filter"
+        adv.find_transactions({'startDate': '2026-03-01', 'endDate': '2026-03-31', 'keyword': "'"}, ctx)
+    with pytest.raises(adv.ToolError):
+        adv.find_transactions({'startDate': '2026-03-01', 'endDate': '2026-03-31', 'keyword': 12}, ctx)
     assert adv.find_transactions({'startDate': '2026-03-01', 'endDate': '2026-03-31', 'accountId': 'util'}, ctx)[0]['entryId'] == 'e2'
     cond = adv._tables[adv.ENTRIES_TABLE].query.call_args.kwargs['FilterExpression']
     assert cond == Attr('status').eq('CONFIRMED') & Attr('sessionId').eq('abc')

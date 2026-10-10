@@ -21,6 +21,7 @@ from penny_common.embedding import embed_text
 from penny_common.ledger import account_net, confirmed_entries, entry_amount, flows, lines_for
 from penny_common.pricing import estimate_cost_usd
 from penny_common.session import OWNER, session_from_headers
+from penny_common.textnorm import fold
 
 # Two clients with tight timeouts: the whole request must finish inside API Gateway's 29 s.
 # Converse is not retried here (a throttle becomes a 503 the client can retry).
@@ -88,9 +89,11 @@ TOOL_SPECS = [
     }},
     {'toolSpec': {
         'name': 'get_spending_summary',
-        'description': ('Confirmed income/expense totals (net of refunds) for a month range of at most 36 '
-                        'months, grouped by month or by expense account. Months with no entries are omitted. '
-                        'Use it for totals, trends and "how much did I spend" questions.'),
+        'description': ('Confirmed totals (net of refunds) for a month range of at most 36 months. '
+                        'groupBy "month" returns each month\'s total income, total expense and net: use it for '
+                        '"how much did I spend/earn" and net-income questions. groupBy "account" returns '
+                        'spending per expense account only (no income): use it for breakdowns. '
+                        'Months with no entries are omitted.'),
         'inputSchema': {'json': {
             'type': 'object',
             'properties': {
@@ -279,11 +282,16 @@ def find_transactions(args: dict, ctx: Context) -> list:
             raise ToolError('minAmount must be a decimal number')
         if not min_amount.is_finite():
             raise ToolError('minAmount must be a finite number')
-    keyword = (args.get('keyword') or '').strip().lower()
+    raw_keyword = args.get('keyword') or ''
+    if not isinstance(raw_keyword, str):
+        raise ToolError('keyword must be a string')
+    keyword = fold(raw_keyword)       # punctuation, spacing, case and accents are ignored
+    if raw_keyword.strip() and not keyword:
+        raise ToolError('keyword must contain letters or digits')   # never "no filter" by accident
     account = args.get('accountId')
     entries = sorted(_entries(ctx, start, end), key=lambda e: (e['date'], e['entryId']), reverse=True)
     if keyword:                          # cheap filter first: no line reads for non-matching entries
-        entries = [e for e in entries if keyword in (e.get('description') or '').lower()]
+        entries = [e for e in entries if keyword in fold(e.get('description') or '')]
     if not account and min_amount is None:
         entries = entries[:limit]        # nothing else filters, so only the newest `limit` need lines
     lines = _lines(entries)

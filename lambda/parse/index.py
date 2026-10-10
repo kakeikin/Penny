@@ -16,7 +16,7 @@ from penny_common.fx import BASE, FxError, normalize_currency, parse_rates, to_b
 from penny_common.masking import mask_identifiers
 from penny_common.pdftext import PdfTextError, extract_pdf_pages
 from penny_common.session import valid_session_id
-from penny_common.textdoc import build_text_doc, doc_id_for, text_doc_key
+from penny_common.textdoc import build_text_doc, doc_id_for, statement_period, text_doc_key
 from penny_common.textnorm import contains_normalized
 
 dynamodb = boto3.resource('dynamodb')
@@ -540,8 +540,10 @@ def process_upload(bucket: str, key: str) -> None:
         print(json.dumps({'event': 'text_doc_skipped_empty', 'docId': doc_id}))
     elif pages:
         try:
+            uploaded_at = datetime.now(timezone.utc).isoformat()
+            period = statement_period([e['date'] for e in map(normalize_entry, entries) if e], uploaded_at)
             write_text_doc(build_text_doc(doc_id, key, source_type, pages, saved, session_id,
-                                          datetime.now(timezone.utc).isoformat()))
+                                          uploaded_at, statement_period=period))
         except Exception as e:  # bookkeeping already succeeded; backfill_index.py can recover
             print(json.dumps({'event': 'text_doc_write_failed', 'docId': doc_id, 'errorType': type(e).__name__}))
     print(json.dumps({'event': 'parsed', 'docId': doc_id, 'entries': len(entries), 'evidence': len(saved)}))
