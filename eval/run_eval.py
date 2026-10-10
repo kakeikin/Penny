@@ -218,7 +218,7 @@ def retrieval(adv, session, queries):
     return metrics.retrieval_metrics(ranks)
 
 
-def run(site, model_names, limit):
+def run(site, model_names, limit, note=None):
     state = load_state()
     session = state['session']
     api = Api(site, session)
@@ -229,21 +229,23 @@ def run(site, model_names, limit):
         sys.exit(f'eval ledger does not match the gold transactions ({ledger}); fix the session before scoring')
     if unindexed(entries):
         sys.exit(f'{unindexed(entries)} evidence items are not indexed yet; re-run setup')
-    queries = load('queries.json')
     full = limit is None and list(model_names) == list(MODELS)
-    queries = queries[:limit]
+    queries = load('queries.json')[:limit]
+    holdout = load('queries_holdout.json') if limit is None else []    # smoke runs skip the held-out set
     adv, env = load_advisor()
     from penny_common.chunking import CHUNKER_VERSION
     report = {'startedAt': datetime.now(timezone.utc).isoformat(timespec='seconds'),
               'datasetVersion': manifest['datasetVersion'], 'manifest': manifest['files'],
               'embedDimensions': env.get('EMBED_DIMENSIONS'), 'vectorIndex': env.get('VECTOR_INDEX'),
-              'chunkerVersion': CHUNKER_VERSION, 'limit': limit, 'modelsRun': list(model_names),
+              'chunkerVersion': CHUNKER_VERSION, 'metricsVersion': metrics.METRICS_VERSION, 'note': note,
+              'limit': limit, 'modelsRun': list(model_names),
               'ledger': ledger, 'retrieval': retrieval(adv, session, queries),
+              'retrievalHoldout': retrieval(adv, session, holdout),
               'evidence': metrics.evidence_metrics(gold, entries), 'models': {}}
     for label in model_names:
         adv.MODEL_ID = MODELS[label]
         rows, costs, latencies = [], [], []
-        for i, q in enumerate(queries):
+        for i, (split, q) in enumerate([('tuned', q) for q in queries] + [('holdout', q) for q in holdout]):
             status, body, latency, logs = ask(adv, session, q['question'])
             ok = status == 200
             if i == 0 and not ok:          # wrong model id / no model access: fail fast
@@ -252,7 +254,7 @@ def run(site, model_names, limit):
                          f'check that {MODELS[label]} is enabled in Bedrock')
             score = metrics.score_answer(q, body if ok else {}, ok=ok)
             cost = (body.get('usage') or {}).get('estCostUsd') if ok else None
-            rows.append({**score, 'pass': metrics.passed(score), 'question': q['question'],
+            rows.append({**score, 'split': split, 'pass': metrics.passed(score), 'question': q['question'],
                          'answer': body.get('answer') if ok else None, 'statusCode': status,
                          'toolsUsed': body.get('toolsUsed'), 'evidenceStatus': body.get('evidenceStatus'),
                          'latencyMs': latency, 'estCostUsd': cost, **logs})
@@ -261,17 +263,22 @@ def run(site, model_names, limit):
                 latencies.append(latency)
             print(f'[{label}] {q["id"]} {"ok  " if rows[-1]["pass"] else "MISS"} {latency:>6} ms  '
                   f'${cost if cost is not None else "n/a"}' + ('' if ok else f'  HTTP {status}'))
-        report['models'][label] = {'modelId': MODELS[label],
-                                   'summary': metrics.summarize(rows, costs, latencies), 'questions': rows}
+        def part(name):
+            idx = [k for k, r in enumerate(rows) if r['split'] == name]
+            return metrics.summarize([rows[k] for k in idx], [costs[k] for k in idx],
+                                     [rows[k]['latencyMs'] for k in idx if rows[k]['ok']])
+        report['models'][label] = {'modelId': MODELS[label], 'summary': part('tuned'),
+                                   'holdoutSummary': part('holdout') if holdout else None, 'questions': rows}
     raw_path = write_raw(report)
-    errors = sum(m['summary']['errors'] for m in report['models'].values())
+    errors = sum(m['summary']['errors'] + (m['holdoutSummary'] or {}).get('errors', 0)
+                 for m in report['models'].values())
     if not full:
         print('partial run (--limit or --models): docs/evaluation-results.md left unchanged')
     elif errors:
         print(f'{errors} answers errored: docs/evaluation-results.md left unchanged; see the raw JSON')
     else:
         with open(REPORT, 'w') as f:
-            f.write(render(report, os.path.relpath(raw_path, ROOT)))
+            f.write(render(report, os.path.relpath(raw_path, ROOT), history()))
         print(f'wrote {os.path.relpath(REPORT, ROOT)}')
 
 
@@ -283,6 +290,38 @@ def write_raw(report) -> str:
         json.dump(report, f, indent=2)
     print(f'wrote {os.path.relpath(raw_path, ROOT)}')
     return raw_path
+
+
+def rescore(run: dict, model: str) -> dict:
+    """Pass rate of a stored run's tuned questions under the *current* scoring rules."""
+    queries = {q['id']: q for q in load('queries.json')}
+    scores = []
+    for row in run['models'][model]['questions']:
+        if row.get('split', 'tuned') != 'tuned' or row['id'] not in queries:
+            continue
+        ok = row.get('statusCode', 200) == 200
+        resp = {'answer': row.get('answer'), 'toolsUsed': row.get('toolsUsed'), 'truncated': row.get('truncated')}
+        scores.append({'pass': metrics.passed(metrics.score_answer(queries[row['id']], resp, ok=ok))})
+    return metrics._rate(scores, 'pass')
+
+
+def history() -> list:
+    """One summary row per full run in eval/results (oldest first), for the report's history table."""
+    rows = []
+    for name in sorted(os.listdir(RESULTS_DIR)) if os.path.isdir(RESULTS_DIR) else []:
+        if not (name.startswith('run-') and name.endswith('.json')):
+            continue
+        with open(os.path.join(RESULTS_DIR, name)) as f:
+            r = json.load(f)
+        if r.get('limit') is not None or set(r.get('models', {})) != set(MODELS):
+            continue                                   # smoke / single-model runs are not history
+        rows.append({'run': name, 'startedAt': r['startedAt'], 'metricsVersion': r.get('metricsVersion', '1'),
+                     'note': r.get('note'),
+                     'pass': {m: d['summary']['passRate'] for m, d in r['models'].items()},
+                     'rescored': {m: rescore(r, m) for m in r['models']},
+                     'errors': sum(d['summary']['errors'] for d in r['models'].values()),
+                     'cost': {m: d['summary']['meanCostUsd'] for m, d in r['models'].items()}})
+    return rows
 
 
 def _pct(r):
@@ -303,7 +342,7 @@ def _secs(v):
     return '—' if v is None else f'{v / 1000:.1f} s'
 
 
-def render(r, raw_path) -> str:
+def render(r, raw_path, runs=()) -> str:
     models = list(r['models'])
     files = r['manifest']
     kinds = {k: sum(1 for f in files if f['kind'] == k) for k in ('statement', 'receipt')}
@@ -312,6 +351,7 @@ def render(r, raw_path) -> str:
             ('Numeric exactness', 'numericExactness', _pct), ('Text match', 'textMatch', _pct),
             ('Citation validity (answers with citations)', 'citationValidity', _pct),
             ('Answers stating money that cite a source', 'moneyCited', _pct),
+            (f'Verbose (> {metrics.MAX_EXTRA_FACTOR}x extra amounts; not a failure)', 'verbose', _pct),
             ('Errors', 'errors', str), ('Truncated', 'truncated', str),
             ('Mean cost / question', 'meanCostUsd', _usd), ('Latency p50', 'latencyP50Ms', _secs),
             ('Latency p95', 'latencyP95Ms', _secs)]
@@ -324,10 +364,25 @@ def render(r, raw_path) -> str:
            f'| Ledger check | booked entries equal the gold transactions ({r["ledger"]["booked"]}/{r["ledger"]["expected"]}) |',
            f'| Embeddings | Titan Text Embeddings V2, {r["embedDimensions"]} dims, index `{r["vectorIndex"]}` |',
            f'| Chunker version | `{r["chunkerVersion"]}` |',
+           f'| Metrics version | `{r.get("metricsVersion", "1")}` |',
            '| Models | ' + ', '.join(f'{m} (`{r["models"][m]["modelId"]}`)' for m in models) + ' |', '',
            '## Agent', '', '| Metric | ' + ' | '.join(models) + ' |', '|---|' + '---|' * len(models)]
     for label, key, fmt in rows:
-        out.append(f'| {label} | ' + ' | '.join(fmt(r['models'][m]['summary'][key]) for m in models) + ' |')
+        out.append(f'| {label} | ' + ' | '.join(fmt(r['models'][m]['summary'].get(key)) for m in models) + ' |')
+    if all(r['models'][m].get('holdoutSummary') for m in models):
+        hold = [('Questions fully passed', 'passRate', _pct), ('Tool selection', 'toolSelection', _pct),
+                ('Numeric exactness', 'numericExactness', _pct), ('Errors', 'errors', str),
+                ('Mean cost / question', 'meanCostUsd', _usd)]
+        out += ['', '## Held-out questions', '',
+                'Paraphrases written after the baseline misses were diagnosed and before the post-fix run; never '
+                'used to tune prompts or tools (`eval/dataset/v1/queries_holdout.json`). They test whether the fixes '
+                'hold up under rewording; they are not an independent test set.', '',
+                '| Metric | ' + ' | '.join(models) + ' |', '|---|' + '---|' * len(models)]
+        for label, key, fmt in hold:
+            out.append(f'| {label} | ' + ' | '.join(fmt(r['models'][m]['holdoutSummary'].get(key)) for m in models) + ' |')
+        rh = r.get('retrievalHoldout') or {}
+        if rh.get('n'):
+            out.append(f'\nRetrieval on held-out questions: hit@3 {_frac(rh["hit@3"], rh["n"])}, MRR {rh["mrr"]}.')
     ret, ev = r['retrieval'], r['evidence']
     out += ['', '## Retrieval (search_documents, same session filter as the agent)', '',
             f'{ret["n"]} questions with gold documents: hit@3 {_frac(ret["hit@3"], ret["n"])}, '
@@ -338,14 +393,30 @@ def render(r, raw_path) -> str:
             f'({_frac(ev["evidenceAccuracy"], ev["booked"])}).', '',
             '## Misses', '']
     for m in models:
-        misses = [q for q in r['models'][m]['questions'] if not q['pass']]
+        misses = [q for q in r['models'][m]['questions'] if not q['pass']]   # tuned and held-out
         out.append(f'- **{m}:** ' + (', '.join(f'{q["id"]} ({q["category"]})' for q in misses) or 'none'))
+    if runs:
+        out += ['', '## Run history', '',
+                'Every full run is kept in `eval/results/`, scored on the 20 tuned questions. "As scored" uses the '
+                'rules of that run; "current rules" re-scores its stored answers with today\'s rules, so code '
+                'fixes and rule changes can be told apart. Code fixes are in each run\'s note.', '',
+                '| Run | Rules | ' + ' | '.join(f'{m} as scored | {m} current rules' for m in models) + ' | '
+                + ' | '.join(f'{m} $/question' for m in models) + ' | Errors | Note |',
+                '|---|---|' + '---|' * (3 * len(models)) + '---|---|']
+        for h in runs:
+            out.append(f'| {h["startedAt"][:10]} | v{h["metricsVersion"]} | '
+                       + ' | '.join(f'{_pct(h["pass"].get(m))} | {_pct(h["rescored"].get(m))}' for m in models) + ' | '
+                       + ' | '.join(_usd(h['cost'].get(m)) for m in models)
+                       + f' | {h["errors"]} | {(h["note"] or "").replace("|", "/")} |')
+        out += [''] + [f'- Metrics v{v}: {text}' for v, text in sorted(metrics.RULE_CHANGES.items())]
     out += ['', '## Method and caveats', '',
             '- Deterministic checks only, no LLM judge. Every rate shows its denominator; a check that does '
             'not apply to a question is excluded from that rate. Errored or truncated answers fail.',
             '- **Numeric exactness:** every gold amount appears in the answer (two-decimal amounts compared as '
-            f'Decimal, sign ignored), and the answer lists at most {metrics.MAX_EXTRA_FACTOR}x as many other '
-            'amounts. No-data questions pass only if the answer states no non-zero figure ($-prefixed or two-decimal).',
+            'Decimal, sign ignored). Answers listing more than '
+            f'{metrics.MAX_EXTRA_FACTOR}x as many other amounts are counted as verbose; more than '
+            f'{metrics.DUMP_FACTOR}x fails (listing everything to hit the right number). No-data '
+            'questions pass only if the answer states no non-zero figure ($-prefixed or two-decimal).',
             '- **Text match:** a case-insensitive substring (account digits, item names). **Tool selection:** '
             'the expected tool was among the tools called (extra tools are allowed); questions expecting no tool are excluded.',
             '- **Citation validity:** of answers that carry citations, the share with no invalid ref removed by '
@@ -371,6 +442,7 @@ def main():
     p.add_argument('--site', help='CloudFront URL (default: FinanceStack SiteUrl output)')
     p.add_argument('--models', default=','.join(MODELS), help=f'comma-separated, from: {", ".join(MODELS)}')
     p.add_argument('--limit', type=int, default=None, help='only the first N questions (smoke run)')
+    p.add_argument('--note', help='what changed since the previous run (shown in the run history)')
     a = p.parse_args()
     site = (a.site or site_url()).rstrip('/')
     if a.command == 'setup':
@@ -380,7 +452,7 @@ def main():
         unknown = [m for m in names if m not in MODELS]
         if unknown:
             sys.exit(f'unknown model(s): {unknown}')
-        run(site, names, a.limit)
+        run(site, names, a.limit, a.note)
 
 
 if __name__ == '__main__':

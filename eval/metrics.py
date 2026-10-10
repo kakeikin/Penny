@@ -12,7 +12,15 @@ from decimal import Decimal
 _AMOUNT = re.compile(r'(?<![\d.,])\d{1,3}(?:,\d{3})+\.\d{2}(?![\d])|(?<![\d.,])\d+\.\d{2}(?![\d])')
 _DOLLARS = re.compile(r'\$\s?(\d[\d,]*(?:\.\d+)?)')        # "$2,100" or "$0" in no-data answers
 _WS = re.compile(r'\s+')
-MAX_EXTRA_FACTOR = 2      # more than 2x as many unexpected amounts as expected ones = a shotgun answer
+MAX_EXTRA_FACTOR = 2      # more than 2x as many other amounts as expected ones = a "verbose" answer
+DUMP_FACTOR = 10          # more than 10x = listing everything to hit the right number: fails
+# Bump when a scoring rule changes, and say what changed in RULE_CHANGES (rendered into the report).
+METRICS_VERSION = '2'
+RULE_CHANGES = {
+    '2': 'Answers listing extra amounts (e.g. a correct total plus its category breakdown) no longer fail '
+         f'numeric exactness up to {DUMP_FACTOR}x the expected count; between {MAX_EXTRA_FACTOR}x and '
+         f'{DUMP_FACTOR}x they are counted separately as "verbose".',
+}
 
 
 def amounts_in(text: str) -> set:
@@ -35,12 +43,13 @@ def score_answer(q: dict, resp: dict, ok: bool = True) -> dict:
     truncated = bool(resp.get('truncated'))
     usable = ok and not truncated
 
-    numeric = None
+    numeric = verbose = None
     if q.get('expectNoData'):
         numeric = usable and not any(a != 0 for a in found | dollar_figures_in(answer))
     elif expected:
-        extra = found - expected
-        numeric = usable and expected <= found and len(extra) <= MAX_EXTRA_FACTOR * len(expected)
+        extra = len(found - expected)
+        numeric = usable and expected <= found and extra <= DUMP_FACTOR * len(expected)
+        verbose = (extra > MAX_EXTRA_FACTOR * len(expected)) if usable else None
     text = None
     if q.get('expectText'):
         text = usable and q['expectText'].lower() in answer.lower()
@@ -57,6 +66,7 @@ def score_answer(q: dict, resp: dict, ok: bool = True) -> dict:
         'citationsValid': (resp.get('invalidCitations', 0) == 0) if (usable and citations) else None,
         # Of the answers that state money, how many cite at least one source.
         'moneyCited': bool(citations) if (usable and has_money) else None,
+        'verbose': verbose,
     }
 
 
@@ -160,6 +170,7 @@ def summarize(scores: list, costs: list, latencies_ms: list) -> dict:
         'textMatch': _rate(scores, 'textOk'),
         'citationValidity': _rate(scores, 'citationsValid'),
         'moneyCited': _rate(scores, 'moneyCited'),
+        'verbose': _rate(scores, 'verbose'),
         'meanCostUsd': f'{total / len(priced):.6f}' if priced else None,
         'totalCostUsd': f'{total:.6f}' if priced else None,
         'unpricedAnswers': sum(1 for c in costs if c is None),

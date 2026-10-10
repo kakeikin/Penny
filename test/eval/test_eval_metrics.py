@@ -29,7 +29,7 @@ def test_amounts_in_handles_signs_and_symbols():
 def test_good_answer_passes_every_applicable_check():
     s = metrics.score_answer(Q_SPEND, GOOD)
     assert s == {'id': 'q01', 'category': 'summary', 'ok': True, 'truncated': False, 'toolOk': True,
-                 'numericOk': True, 'textOk': None, 'citationsValid': True, 'moneyCited': True}
+                 'numericOk': True, 'textOk': None, 'citationsValid': True, 'moneyCited': True, 'verbose': False}
     assert metrics.passed(s)
 
 
@@ -54,11 +54,15 @@ def test_extra_tools_are_allowed_but_no_tool_questions_are_excluded():
     assert metrics.score_answer(Q_NODATA, {'answer': 'No data.'})['toolOk'] is None
 
 
-def test_shotgun_answers_fail_numeric_exactness():
+def test_verbose_answers_are_flagged_not_failed():
     q = {'id': 'q11', 'category': 'transaction', 'expectTools': [], 'expectAmounts': ['1850.00']}
-    listing = 'Your February expenses: 44.10, 121.43, 15.49, 41.76, 37.27, 14.16 and 1850.00.'
-    assert not metrics.score_answer(q, {'answer': listing})['numericOk']
-    assert metrics.score_answer(q, {'answer': 'Rent, $1,850.00, out of $2,155.84 total.'})['numericOk']
+    listing = metrics.score_answer(q, {'answer': 'Your February expenses: 44.10, 121.43, 15.49, 41.76, 37.27, 14.16 and 1850.00.'})
+    assert listing['numericOk'] and listing['verbose']
+    brief = metrics.score_answer(q, {'answer': 'Rent, $1,850.00, out of $2,155.84 total.'})
+    assert brief['numericOk'] and brief['verbose'] is False
+    assert metrics.score_answer(Q_NODATA, {'answer': 'None.'})['verbose'] is None
+    dump = ' '.join(f'{n}.00' for n in range(100, 112)) + ' 1850.00'      # 12 extra amounts for 1 expected
+    assert not metrics.score_answer(q, {'answer': dump})['numericOk']
 
 
 def test_amount_matching_is_whole_token():
@@ -172,7 +176,19 @@ def test_run_eval_report_renders_every_section_with_denominators():
               'evidence': {'n': 24, 'booked': 24, 'bookedRate': 1.0, 'evidenceCorrect': 23, 'evidenceAccuracy': 0.958},
               'models': {'haiku-4.5': {'modelId': 'h', 'summary': summary, 'questions': rows},
                          'sonnet-4.6': {'modelId': 's', 'summary': summary, 'questions': rows}}}
-    md = run_eval.render(report, 'eval/results/run-x.json')
+    p70, p75 = {'rate': 0.7, 'passed': 14, 'n': 20}, {'rate': 0.75, 'passed': 15, 'n': 20}
+    runs = [{'run': 'run-a.json', 'startedAt': '2026-10-09T07:40:50+00:00', 'metricsVersion': '1', 'note': 'a | b',
+             'pass': {'haiku-4.5': p70, 'sonnet-4.6': p70}, 'rescored': {'haiku-4.5': p75, 'sonnet-4.6': p70},
+             'cost': {'haiku-4.5': '0.004663', 'sonnet-4.6': '0.014351'}, 'errors': 0}]
+    for m in report['models'].values():
+        m['holdoutSummary'] = summary
+    report['retrievalHoldout'] = metrics.retrieval_metrics([1, 1])
+    md = run_eval.render(report, 'eval/results/run-x.json', runs)
+    assert ('| 2026-10-09 | v1 | 70% (14/20) | 75% (15/20) | 70% (14/20) | 70% (14/20) | $0.004663 | $0.014351 '
+            '| 0 | a / b |') in md
+    assert '## Held-out questions' in md and 'Retrieval on held-out questions: hit@3 100% (2/2)' in md
+    assert 'Metrics v2: Answers listing extra amounts' in md
+    assert run_eval.render(report, 'x.json').count('Run history') == 0
     assert '| Questions fully passed | 50% (1/2) | 50% (1/2) |' in md
     assert '| Mean cost / question | $0.003000 | $0.003000 |' in md
     assert '3 synthetic statements, 2 synthetic receipts, 26 gold transactions, 2 questions' in md
@@ -184,3 +200,29 @@ def test_run_eval_report_renders_every_section_with_denominators():
 def test_zero_figures_are_not_money_to_cite():
     s = metrics.score_answer(Q_NODATA, {'answer': 'You spent $0 in December 2025.'})
     assert s['numericOk'] and s['moneyCited'] is None
+
+
+def test_rescore_applies_current_rules_to_stored_answers(monkeypatch):
+    queries = [{**Q_SPEND}, {**Q_NODATA}]
+    monkeypatch.setattr(run_eval, 'load', lambda name: queries)
+    rows = [{'id': 'q01', 'answer': 'Total $2,100.77: rent 1850.00, food 150.00, gas 100.77 [S1].',
+             'toolsUsed': ['get_spending_summary'], 'truncated': False, 'statusCode': 200},
+            {'id': 'q19', 'answer': None, 'toolsUsed': None, 'truncated': False, 'statusCode': 500},
+            {'id': 'h01', 'split': 'holdout', 'answer': 'x', 'statusCode': 200}]          # not part of history
+    out = run_eval.rescore({'models': {'m': {'questions': rows}}}, 'm')
+    assert out == {'rate': 0.5, 'passed': 1, 'n': 2}      # verbose q01 passes under v2; the 500 still fails
+
+
+def test_history_skips_smoke_and_single_model_runs(tmp_path, monkeypatch):
+    import json as _json
+    monkeypatch.setattr(run_eval, 'RESULTS_DIR', str(tmp_path))
+    monkeypatch.setattr(run_eval, 'load', lambda name: [Q_SPEND])
+    full = {'startedAt': '2026-10-09T00:00:00+00:00', 'limit': None,
+            'models': {m: {'summary': {'passRate': None, 'meanCostUsd': None, 'errors': 0}, 'questions': []}
+                       for m in run_eval.MODELS}}
+    (tmp_path / 'run-1.json').write_text(_json.dumps(full))
+    (tmp_path / 'run-2.json').write_text(_json.dumps({**full, 'limit': 3}))
+    (tmp_path / 'run-3.json').write_text(_json.dumps({**full, 'models': {'haiku-4.5': full['models']['haiku-4.5']}}))
+    (tmp_path / 'notes.txt').write_text('x')
+    rows = run_eval.history()
+    assert [r['run'] for r in rows] == ['run-1.json'] and rows[0]['metricsVersion'] == '1'
