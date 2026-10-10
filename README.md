@@ -49,7 +49,7 @@ After the fixes, the run history re-scores every stored run under the current ru
 
 **Manual testing (author).** During development, on the pre-RAG parser, I parsed 300+ of my own real bank statements and receipts. These aren't in this repo or the demo, because they contain personal data.
 - I compared every parsed entry's date and amount with the source document by hand, and all of them matched.
-- The cost was under $0.02 per document: API billing divided by the number of documents.
+- The cost was under $0.02 per document: Bedrock billing divided by the number of documents.
 - I didn't check account classification in that pass.
 - This was my own check, not part of the reproducible eval. The current parser also returns evidence lines and currency, so its output (and cost) per document is somewhat larger.
 
@@ -103,7 +103,7 @@ Ten Lambda functions, all defined in [`lib/finance-stack.ts`](lib/finance-stack.
 ## Cost
 
 - **Idle:** about $0. There is no always-on compute or database: Lambda, DynamoDB on-demand, S3, S3 Vectors and CloudFront are all pay-per-use.
-- **Per document:** one Claude Sonnet 4.6 parse call, plus Titan V2 embeddings for its chunks (a few hundred tokens per document). The pre-RAG parser cost under $0.02 per document, from API billing; see Manual testing above.
+- **Per document:** one Claude Sonnet 4.6 parse call, plus Titan V2 embeddings for its chunks (a few hundred tokens per document). The pre-RAG parser cost under $0.02 per document, from Bedrock billing; see Manual testing above.
 - **Per advisor question:** $0.0041 mean with Haiku 4.5, measured on the eval above. Every request logs its tokens and `estCostUsd`, calculated from list prices in [`pricing.py`](lambda/common/penny_common/pricing.py). Logs never contain question text or amounts.
 
 ## Running it
